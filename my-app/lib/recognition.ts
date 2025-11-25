@@ -5,7 +5,7 @@ import { createCharacterCanvases, segmentGroupIntoCharacters } from './image-pro
 
 // Type for TensorFlow.js model
 type Model = {
-  predict: (tensor: unknown) => { dataSync: () => Float32Array; dispose: () => void; argMax: (axis?: number) => { dataSync: () => Int32Array } };
+  predict: (tensor: unknown) => { dataSync: () => Float32Array; dispose: () => void; argMax: (axis?: number) => { dataSync: () => Int32Array; dispose: () => void } };
 };
 
 type TensorFlow = {

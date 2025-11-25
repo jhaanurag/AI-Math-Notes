@@ -1,6 +1,9 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
+/* Google Fonts - Handwriting style for math results */
+@import url('https://fonts.googleapis.com/css2?family=Kalam:wght@400;700&family=Caveat:wght@400;700&display=swap');
+
 @custom-variant dark (&:is(.dark *));
 
 @theme inline {

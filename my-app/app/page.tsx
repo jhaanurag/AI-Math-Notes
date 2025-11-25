@@ -1,103 +1,162 @@
-import Image from "next/image";
+'use client';
+
+import { useRef, useCallback, useState, useEffect } from 'react';
+import MathCanvas, { MathCanvasRef } from '@/components/MathCanvas';
+import { StrokeGroup } from '@/lib/types';
+import { useRecognition } from '@/hooks/useRecognition';
+import { solve, clearScope } from '@/lib/math-solver';
 
 export default function Home() {
-  return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+  const canvasRef = useRef<MathCanvasRef>(null);
+  const [status, setStatus] = useState<string>('Draw a math expression...');
+  const [showDebug, setShowDebug] = useState(true);
+  
+  // Recognition engine (mock or model)
+  const { recognize, mode, setMode, isLoading, error } = useRecognition('mock');
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+  // Handle when a group is ready for recognition
+  const handleGroupReady = useCallback(async (group: StrokeGroup) => {
+    setStatus(`Processing group ${group.id.slice(0, 8)}...`);
+
+    try {
+      // Use the recognition engine
+      const expression = await recognize(group);
+      setStatus(`Recognized: "${expression}"`);
+
+      // Solve the expression
+      const { result, error: solveError } = solve(expression);
+
+      if (solveError) {
+        setStatus(`Error: ${solveError}`);
+        canvasRef.current?.updateGroupResult(group.id, expression, '?');
+      } else {
+        setStatus(`${expression} ${result}`);
+        canvasRef.current?.updateGroupResult(group.id, expression, result);
+      }
+    } catch (err) {
+      console.error('Recognition error:', err);
+      setStatus('Recognition failed');
+      canvasRef.current?.updateGroupResult(group.id, '', '?');
+    }
+  }, [recognize]);
+
+  // Clear canvas handler
+  const handleClear = useCallback(() => {
+    canvasRef.current?.clearCanvas();
+    clearScope();
+    setStatus('Canvas cleared. Draw a math expression...');
+  }, []);
+
+  // Toggle recognition mode
+  const toggleMode = useCallback(() => {
+    setMode(mode === 'mock' ? 'model' : 'mock');
+  }, [mode, setMode]);
+
+  return (
+    <main className="relative w-screen h-screen overflow-hidden bg-zinc-900">
+      {/* Canvas */}
+      <MathCanvas
+        ref={canvasRef}
+        onGroupReady={handleGroupReady}
+        debounceMs={1000}
+        clusterThreshold={50}
+      />
+
+      {/* Header UI */}
+      <div className="absolute top-0 left-0 right-0 p-4 flex justify-between items-start pointer-events-none">
+        <div className="pointer-events-auto">
+          <h1 className="text-xl font-bold text-white mb-1">
+            Spatial Math Notes
+          </h1>
+          <p className="text-sm text-zinc-400">
+            Draw equations anywhere • They&apos;ll be grouped and solved automatically
+          </p>
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
-          />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
-          />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+
+        <div className="flex gap-2 pointer-events-auto">
+          <button
+            onClick={toggleMode}
+            disabled={isLoading}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              mode === 'model'
+                ? 'bg-purple-600 text-white'
+                : 'bg-zinc-700 text-zinc-300'
+            } ${isLoading ? 'opacity-50 cursor-wait' : ''}`}
+          >
+            {isLoading ? 'Loading...' : mode === 'model' ? '🧠 AI Model' : '🎲 Mock'}
+          </button>
+          <button
+            onClick={() => setShowDebug(!showDebug)}
+            className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
+              showDebug
+                ? 'bg-green-600 text-white'
+                : 'bg-zinc-700 text-zinc-300'
+            }`}
+          >
+            Debug: {showDebug ? 'ON' : 'OFF'}
+          </button>
+          <button
+            onClick={handleClear}
+            className="px-3 py-1.5 rounded bg-red-600 text-white text-sm font-medium hover:bg-red-700 transition-colors"
+          >
+            Clear
+          </button>
+        </div>
+      </div>
+
+      {/* Status bar */}
+      <div className="absolute bottom-0 left-0 right-0 p-4 pointer-events-none">
+        <div className="bg-zinc-800/80 backdrop-blur rounded-lg px-4 py-2 inline-block">
+          <p className="text-sm text-zinc-300 font-mono">
+            {error ? `⚠️ ${error}` : status}
+          </p>
+          <p className="text-xs text-zinc-500 mt-1">
+            Mode: {mode === 'model' ? 'AI Model' : 'Mock Recognition'}
+          </p>
+        </div>
+      </div>
+
+      {/* Instructions overlay (shows briefly on load) */}
+      <Instructions />
+    </main>
+  );
+}
+
+function Instructions() {
+  const [visible, setVisible] = useState(true);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setVisible(false), 5000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  if (!visible) return null;
+
+  return (
+    <div
+      className="absolute inset-0 flex items-center justify-center pointer-events-none"
+      style={{ animation: 'fadeOut 1s ease-out 4s forwards' }}
+    >
+      <div className="bg-zinc-800/90 backdrop-blur-sm rounded-xl p-6 max-w-md text-center">
+        <h2 className="text-lg font-semibold text-white mb-3">How to Use</h2>
+        <ul className="text-sm text-zinc-300 space-y-2 text-left">
+          <li>✏️ Draw math expressions anywhere on the canvas</li>
+          <li>📦 Nearby strokes are automatically grouped together</li>
+          <li>⏱️ Wait 1 second after drawing for recognition</li>
+          <li>✨ Results appear in gold next to your equation</li>
+          <li>🔢 Try: <code className="bg-zinc-700 px-1 rounded">2+2=</code> or <code className="bg-zinc-700 px-1 rounded">x=5</code></li>
+        </ul>
+        <p className="text-xs text-zinc-500 mt-4">
+          (This message will disappear in a few seconds)
+        </p>
+      </div>
+
+      <style jsx>{`
+        @keyframes fadeOut {
+          from { opacity: 1; }
+          to { opacity: 0; visibility: hidden; }
+        }
+      `}</style>
     </div>
   );
 }
