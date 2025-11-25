@@ -3,10 +3,10 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { StrokeGroup } from '@/lib/types';
-import { mockRecognize } from '@/lib/recognition';
-import { loadModel, recognizeWithModel, isModelReady, getModelStatus } from '@/lib/model-manager';
+import { smartRecognize } from '@/lib/smart-recognition';
+import { loadModel, recognizeWithModel, isModelReady } from '@/lib/model-manager';
 
-export type RecognitionMode = 'mock' | 'model';
+export type RecognitionMode = 'smart' | 'model';
 
 export interface UseRecognitionResult {
   recognize: (group: StrokeGroup) => Promise<string>;
@@ -17,7 +17,7 @@ export interface UseRecognitionResult {
   loadModelFromUrl: (url: string) => Promise<void>;
 }
 
-export function useRecognition(initialMode: RecognitionMode = 'mock'): UseRecognitionResult {
+export function useRecognition(initialMode: RecognitionMode = 'smart'): UseRecognitionResult {
   const [mode, setMode] = useState<RecognitionMode>(initialMode);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -35,8 +35,8 @@ export function useRecognition(initialMode: RecognitionMode = 'mock'): UseRecogn
         .catch((err) => {
           setError(err.message || 'Failed to load model');
           setIsLoading(false);
-          // Fall back to mock mode
-          setMode('mock');
+          // Fall back to smart mode
+          setMode('smart');
         });
     }
   }, [mode]);
@@ -46,11 +46,11 @@ export function useRecognition(initialMode: RecognitionMode = 'mock'): UseRecogn
       try {
         return await recognizeWithModel(group);
       } catch (err) {
-        console.error('Model recognition failed, falling back to mock:', err);
-        return mockRecognize(group);
+        console.error('Model recognition failed, falling back to smart:', err);
+        return smartRecognize(group);
       }
     }
-    return mockRecognize(group);
+    return smartRecognize(group);
   }, [mode]);
 
   const loadModelFromUrl = useCallback(async (url: string) => {

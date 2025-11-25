@@ -11,8 +11,8 @@ export default function Home() {
   const [status, setStatus] = useState<string>('Draw a math expression...');
   const [showDebug, setShowDebug] = useState(true);
   
-  // Recognition engine (mock or model)
-  const { recognize, mode, setMode, isLoading, error } = useRecognition('mock');
+  // Recognition engine (smart pattern or ML model)
+  const { recognize, mode, setMode, isLoading, error } = useRecognition('smart');
 
   // Handle when a group is ready for recognition
   const handleGroupReady = useCallback(async (group: StrokeGroup) => {
@@ -49,17 +49,17 @@ export default function Home() {
 
   // Toggle recognition mode
   const toggleMode = useCallback(() => {
-    setMode(mode === 'mock' ? 'model' : 'mock');
+    setMode(mode === 'smart' ? 'model' : 'smart');
   }, [mode, setMode]);
 
   return (
     <main className="relative w-screen h-screen overflow-hidden bg-zinc-900">
-      {/* Canvas */}
+      {/* Canvas - smaller threshold (30px) to avoid merging close but separate characters */}
       <MathCanvas
         ref={canvasRef}
         onGroupReady={handleGroupReady}
-        debounceMs={1000}
-        clusterThreshold={50}
+        debounceMs={1200}
+        clusterThreshold={30}
       />
 
       {/* Header UI */}
@@ -74,16 +74,22 @@ export default function Home() {
         </div>
 
         <div className="flex gap-2 pointer-events-auto">
+          <a
+            href="/v2"
+            className="px-3 py-1.5 rounded bg-purple-600 text-white text-sm font-medium hover:bg-purple-700 transition-colors"
+          >
+            Try V2 (Per-Char)
+          </a>
           <button
             onClick={toggleMode}
             disabled={isLoading}
             className={`px-3 py-1.5 rounded text-sm font-medium transition-colors ${
               mode === 'model'
                 ? 'bg-purple-600 text-white'
-                : 'bg-zinc-700 text-zinc-300'
+                : 'bg-blue-600 text-white'
             } ${isLoading ? 'opacity-50 cursor-wait' : ''}`}
           >
-            {isLoading ? 'Loading...' : mode === 'model' ? '🧠 AI Model' : '🎲 Mock'}
+            {isLoading ? 'Loading...' : mode === 'model' ? '🧠 ML Model' : '✨ Smart'}
           </button>
           <button
             onClick={() => setShowDebug(!showDebug)}
@@ -111,7 +117,7 @@ export default function Home() {
             {error ? `⚠️ ${error}` : status}
           </p>
           <p className="text-xs text-zinc-500 mt-1">
-            Mode: {mode === 'model' ? 'AI Model' : 'Mock Recognition'}
+            Mode: {mode === 'model' ? 'ML Model' : 'Smart Pattern Recognition'}
           </p>
         </div>
       </div>

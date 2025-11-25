@@ -123,7 +123,7 @@ const MathCanvas = forwardRef<MathCanvasRef, MathCanvasProps>(
         // Draw result if available
         if (group.result) {
           ctx.save();
-          ctx.font = "32px 'Kalam', 'Caveat', cursive";
+          ctx.font = "bold 32px cursive";
           ctx.fillStyle = '#FFD700'; // Gold color
           const resultX = paddedBox.maxX + 20;
           const resultY =
