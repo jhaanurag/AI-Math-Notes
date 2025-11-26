@@ -101,33 +101,55 @@ export function calculateOverlapRatio(box1: BoundingBox, box2: BoundingBox): { o
 
 /**
  * Check if two strokes should be grouped as the same character
- * Uses overlap threshold and spatial proximity
+ * Must be STRICT to avoid merging separate characters
  */
-export function shouldGroupStrokes(stroke1: Stroke, stroke2: Stroke, threshold: number = 0.15): boolean {
-  const overlap = calculateOverlapRatio(stroke1.boundingBox, stroke2.boundingBox);
+export function shouldGroupStrokes(stroke1: Stroke, stroke2: Stroke): boolean {
+  const box1 = stroke1.boundingBox;
+  const box2 = stroke2.boundingBox;
   
-  // Check if there's significant overlap in both dimensions
-  // Or if the strokes are very close (for characters like +, =, etc.)
-  const hasOverlap = overlap.overlapX > threshold || overlap.overlapY > threshold;
+  // Calculate actual pixel overlap
+  const overlapX = Math.max(0, Math.min(box1.maxX, box2.maxX) - Math.max(box1.minX, box2.minX));
+  const overlapY = Math.max(0, Math.min(box1.maxY, box2.maxY) - Math.max(box1.minY, box2.minY));
   
-  // Also check proximity - strokes close together might be same character
-  const centerDistX = Math.abs(stroke1.boundingBox.centerX - stroke2.boundingBox.centerX);
-  const centerDistY = Math.abs(stroke1.boundingBox.centerY - stroke2.boundingBox.centerY);
-  const avgSize = Math.max(
-    (stroke1.boundingBox.width + stroke2.boundingBox.width) / 2,
-    (stroke1.boundingBox.height + stroke2.boundingBox.height) / 2,
-    30 // minimum size to prevent division issues
-  );
+  // Must have ACTUAL overlap (not just proximity) to be same character
+  const hasRealOverlap = overlapX > 5 && overlapY > 5;
   
-  const isClose = centerDistX < avgSize * 1.2 && centerDistY < avgSize * 1.2;
+  // Calculate center distance
+  const centerDistX = Math.abs(box1.centerX - box2.centerX);
+  const centerDistY = Math.abs(box1.centerY - box2.centerY);
   
-  // Time-based grouping - strokes drawn close in time are likely same character
+  // For multi-stroke characters like + or =
+  // The strokes must be very close AND have significant overlap
+  const avgWidth = (box1.width + box2.width) / 2;
+  const avgHeight = (box1.height + box2.height) / 2;
+  
+  // Calculate how much one stroke is "inside" the other
+  // For + sign: horizontal stroke's center should be inside vertical stroke's Y range and vice versa
+  const stroke1InsideStroke2X = box1.centerX >= box2.minX - 10 && box1.centerX <= box2.maxX + 10;
+  const stroke1InsideStroke2Y = box1.centerY >= box2.minY - 10 && box1.centerY <= box2.maxY + 10;
+  const stroke2InsideStroke1X = box2.centerX >= box1.minX - 10 && box2.centerX <= box1.maxX + 10;
+  const stroke2InsideStroke1Y = box2.centerY >= box1.minY - 10 && box2.centerY <= box1.maxY + 10;
+  
+  // Strokes cross each other (like in + sign)
+  const strokesCross = (stroke1InsideStroke2X && stroke2InsideStroke1Y) || 
+                       (stroke1InsideStroke2Y && stroke2InsideStroke1X);
+  
+  // Time-based: only consider if drawn VERY quickly together (< 500ms)
   const stroke1LastTime = stroke1.points[stroke1.points.length - 1]?.timestamp || 0;
   const stroke2FirstTime = stroke2.points[0]?.timestamp || 0;
   const timeDiff = Math.abs(stroke2FirstTime - stroke1LastTime);
-  const isQuickSuccession = timeDiff < 1000; // Within 1 second
-
-  return (hasOverlap && isClose) || (isClose && isQuickSuccession);
+  const isVeryQuick = timeDiff < 500;
+  
+  // For = sign: two horizontal strokes stacked vertically
+  const bothHorizontal = box1.width > box1.height * 1.5 && box2.width > box2.height * 1.5;
+  const stackedVertically = centerDistY < Math.max(avgHeight, 30) && centerDistX < Math.min(avgWidth * 0.5, 20);
+  const isEqualsSign = bothHorizontal && stackedVertically && overlapX > avgWidth * 0.5;
+  
+  // Group if:
+  // 1. Strokes physically cross each other (+ sign)
+  // 2. Strokes are = sign pattern
+  // 3. Has real overlap AND very quick succession
+  return strokesCross || isEqualsSign || (hasRealOverlap && isVeryQuick);
 }
 
 /**

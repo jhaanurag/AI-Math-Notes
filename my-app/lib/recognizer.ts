@@ -2,7 +2,7 @@
 // Loads pre-trained model, no training on client
 
 import * as tf from '@tensorflow/tfjs';
-import { Character, EMNIST_LABELS, LETTER_TO_SYMBOL } from './types';
+import { Character, MODEL_LABELS, LETTER_TO_SYMBOL } from './types';
 
 const CANVAS_SIZE = 28;
 
@@ -60,54 +60,73 @@ function characterToImageData(character: Character): Float32Array {
   canvas.height = CANVAS_SIZE;
   const ctx = canvas.getContext('2d')!;
 
-  // White background
-  ctx.fillStyle = 'white';
+  // Black background (MNIST style)
+  ctx.fillStyle = 'black';
   ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
   // Calculate scaling to fit character in canvas with padding
   const bbox = character.boundingBox;
-  const padding = 4;
+  const padding = 3;
   const availableSize = CANVAS_SIZE - padding * 2;
+  
+  // Make sure we have valid dimensions
+  const charWidth = Math.max(bbox.width, 10);
+  const charHeight = Math.max(bbox.height, 10);
+  
+  // Scale to fit while maintaining aspect ratio
   const scale = Math.min(
-    availableSize / Math.max(bbox.width, 1),
-    availableSize / Math.max(bbox.height, 1)
+    availableSize / charWidth,
+    availableSize / charHeight
   );
+  
+  // Limit scale to reasonable range
+  const finalScale = Math.min(Math.max(scale, 0.1), 2);
+
+  // Calculate scaled dimensions
+  const scaledWidth = charWidth * finalScale;
+  const scaledHeight = charHeight * finalScale;
 
   // Center the character
-  const offsetX = padding + (availableSize - bbox.width * scale) / 2 - bbox.minX * scale;
-  const offsetY = padding + (availableSize - bbox.height * scale) / 2 - bbox.minY * scale;
+  const offsetX = padding + (availableSize - scaledWidth) / 2 - bbox.minX * finalScale;
+  const offsetY = padding + (availableSize - scaledHeight) / 2 - bbox.minY * finalScale;
 
-  // Draw strokes
-  ctx.strokeStyle = 'black';
-  ctx.lineWidth = Math.max(2, 3 * scale);
+  // Draw strokes in white (MNIST style: white on black)
+  ctx.strokeStyle = 'white';
+  ctx.lineWidth = Math.max(1.5, 2.5 * finalScale);
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
   for (const stroke of character.strokes) {
-    if (stroke.points.length < 2) continue;
+    if (stroke.points.length < 2) {
+      // Draw single point as a dot
+      if (stroke.points.length === 1) {
+        const p = stroke.points[0];
+        ctx.beginPath();
+        ctx.arc(p.x * finalScale + offsetX, p.y * finalScale + offsetY, ctx.lineWidth / 2, 0, Math.PI * 2);
+        ctx.fillStyle = 'white';
+        ctx.fill();
+      }
+      continue;
+    }
 
     ctx.beginPath();
     const firstPoint = stroke.points[0];
-    ctx.moveTo(firstPoint.x * scale + offsetX, firstPoint.y * scale + offsetY);
+    ctx.moveTo(firstPoint.x * finalScale + offsetX, firstPoint.y * finalScale + offsetY);
 
     for (let i = 1; i < stroke.points.length; i++) {
       const point = stroke.points[i];
-      ctx.lineTo(point.x * scale + offsetX, point.y * scale + offsetY);
+      ctx.lineTo(point.x * finalScale + offsetX, point.y * finalScale + offsetY);
     }
     ctx.stroke();
   }
 
-  // Get image data and convert to grayscale tensor format
+  // Get image data - already white on black, just need grayscale
   const imageData = ctx.getImageData(0, 0, CANVAS_SIZE, CANVAS_SIZE);
   const data = new Float32Array(CANVAS_SIZE * CANVAS_SIZE);
 
   for (let i = 0; i < CANVAS_SIZE * CANVAS_SIZE; i++) {
-    // Convert to grayscale and invert (black on white -> white on black for model)
-    const r = imageData.data[i * 4];
-    const g = imageData.data[i * 4 + 1];
-    const b = imageData.data[i * 4 + 2];
-    const gray = (r + g + b) / 3;
-    data[i] = 1 - gray / 255;
+    // Just use red channel since it's grayscale
+    data[i] = imageData.data[i * 4] / 255;
   }
 
   return data;
@@ -197,24 +216,96 @@ function recognizeWithRules(character: Character): { label: string; confidence: 
 }
 
 /**
+ * Check if a character that was recognized as '1' is actually a '/' (slash)
+ * Looks at: tilt angle, aspect ratio, and comparison with neighbors
+ */
+function isActuallySlash(character: Character, predictedLabel: string): boolean {
+  if (predictedLabel !== '1') return false;
+  
+  const { strokes, boundingBox: bbox } = character;
+  if (strokes.length !== 1) return false;
+  
+  const stroke = strokes[0];
+  if (stroke.points.length < 3) return false;
+  
+  const first = stroke.points[0];
+  const last = stroke.points[stroke.points.length - 1];
+  
+  // Calculate the tilt angle
+  const dx = last.x - first.x;
+  const dy = last.y - first.y;
+  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
+  
+  // Slash typically goes from top-right to bottom-left (angle around 110-160 degrees)
+  // or bottom-left to top-right (angle around -70 to -20 degrees)
+  const isForwardSlash = (angle > 100 && angle < 170) || (angle > -80 && angle < -10);
+  
+  // Check aspect ratio - slash is usually taller than wide but has some width
+  const aspectRatio = bbox.width / Math.max(bbox.height, 1);
+  const hasSlashAspect = aspectRatio > 0.2 && aspectRatio < 0.8;
+  
+  // Check if the stroke has significant horizontal movement (unlike a straight '1')
+  const horizontalTravel = Math.abs(dx);
+  const verticalTravel = Math.abs(dy);
+  const hasDiagonalMovement = horizontalTravel > verticalTravel * 0.25;
+  
+  console.log(`Slash check: angle=${angle.toFixed(1)}°, aspect=${aspectRatio.toFixed(2)}, hTravel=${horizontalTravel.toFixed(0)}, isSlash=${isForwardSlash && hasSlashAspect && hasDiagonalMovement}`);
+  
+  return isForwardSlash && hasSlashAspect && hasDiagonalMovement;
+}
+
+/**
+ * Check if character looks like an equals sign
+ * Since the model doesn't have '=' in its training set, we use rules for this
+ */
+function isEqualsSign(character: Character): boolean {
+  const { strokes, boundingBox: bbox } = character;
+  const numStrokes = strokes.length;
+  const aspectRatio = bbox.width / Math.max(bbox.height, 1);
+  
+  // Equals sign should have exactly 2 strokes
+  if (numStrokes !== 2) return false;
+  
+  // Should be wider than tall
+  if (aspectRatio < 1.2) return false;
+  
+  // Both strokes should be horizontal
+  for (const stroke of strokes) {
+    if (stroke.points.length < 2) return false;
+    const first = stroke.points[0];
+    const last = stroke.points[stroke.points.length - 1];
+    const dx = Math.abs(last.x - first.x);
+    const dy = Math.abs(last.y - first.y);
+    
+    // Stroke should be mostly horizontal
+    if (dy > dx * 0.5) return false;
+  }
+  
+  // Check that the two strokes are stacked vertically
+  const stroke1Center = (strokes[0].boundingBox.minY + strokes[0].boundingBox.maxY) / 2;
+  const stroke2Center = (strokes[1].boundingBox.minY + strokes[1].boundingBox.maxY) / 2;
+  const verticalGap = Math.abs(stroke1Center - stroke2Center);
+  
+  // Gap should be reasonable (not too big, not too small)
+  if (verticalGap < 5 || verticalGap > bbox.height) return false;
+  
+  return true;
+}
+
+/**
  * Recognize a character using the ML model or fallback to rules
  */
 export async function recognizeCharacter(character: Character): Promise<{ label: string; confidence: number }> {
-  // First, check if this looks like a math operator using rules
-  // (ML model trained on EMNIST doesn't have +, -, =, etc.)
-  const ruleResult = recognizeWithRules(character);
-  
-  // If rules are confident about an operator, use that
-  const operators = ['+', '-', '*', '/', '=', '.', '^', '(', ')'];
-  if (operators.includes(ruleResult.label) && ruleResult.confidence >= 0.6) {
-    console.log(`Rule-based: ${ruleResult.label} (${(ruleResult.confidence * 100).toFixed(0)}%)`);
-    return ruleResult;
+  // First check for equals sign since the model doesn't have it
+  if (isEqualsSign(character)) {
+    console.log('Rule-based: = (equals sign detected)');
+    return { label: '=', confidence: 0.85 };
   }
   
   // Try to load model if not already attempted
   const modelAvailable = await initializeModel();
   
-  // If model loaded successfully, use it for digits/letters
+  // If model loaded successfully, use it
   if (modelAvailable && model) {
     try {
       const imageData = characterToImageData(character);
@@ -236,38 +327,34 @@ export async function recognizeCharacter(character: Character): Promise<{ label:
         }
       }
 
-      // Get the predicted label from EMNIST
-      let label = EMNIST_LABELS[maxIdx] || '?';
+      // Get the predicted label from model
+      let label = MODEL_LABELS[maxIdx] || '?';
       
-      // Map certain letters to math symbols
+      // Post-processing: check if '1' is actually '/'
+      if (isActuallySlash(character, label)) {
+        console.log('Post-process: Correcting 1 → / (slash detected by angle)');
+        label = '/';
+      }
+      
+      // Map certain characters if needed
       if (LETTER_TO_SYMBOL[label]) {
         label = LETTER_TO_SYMBOL[label];
       }
 
       console.log(`ML prediction: ${label} (${(maxProb * 100).toFixed(1)}%) - index ${maxIdx}`);
 
-      // If ML is confident, use it
-      if (maxProb > 0.5) {
-        return {
-          label,
-          confidence: maxProb,
-        };
-      }
-      
-      // Otherwise, if rules had a guess, use that
-      if (ruleResult.confidence > 0.3) {
-        return ruleResult;
-      }
-      
-      // Default to ML result
-      return { label, confidence: maxProb };
+      return {
+        label,
+        confidence: maxProb,
+      };
     } catch (e) {
       console.error('ML recognition failed:', e);
-      // Fall through to rule-based
     }
   }
   
   // Fallback to rule-based recognition
+  const ruleResult = recognizeWithRules(character);
+  console.log(`Rule-based: ${ruleResult.label} (${(ruleResult.confidence * 100).toFixed(0)}%)`);
   return ruleResult;
 }
 

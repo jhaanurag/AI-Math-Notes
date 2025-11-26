@@ -48,26 +48,38 @@ export interface CanvasState {
   isDrawing: boolean;
 }
 
-// Model labels for recognition - EMNIST Balanced (47 classes mapped to 42)
-// The model outputs 42 classes from EMNIST balanced dataset
-export const EMNIST_LABELS = [
+// Model labels for recognition - 17 classes
+// Matches the order from your training:
+// 0-9: digits, 10: divide_symbol, 11: lparen, 12: minus, 13: plus, 14: rparen, 15: slash, 16: times
+export const MODEL_LABELS = [
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J',
-  'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T',
-  'U', 'V', 'W', 'X', 'Y', 'Z', 'a', 'b', 'd', 'e',
-  'f', 'g'
+  '÷',   // 10: divide_symbol
+  '(',   // 11: lparen
+  '-',   // 12: minus
+  '+',   // 13: plus
+  ')',   // 14: rparen
+  '/',   // 15: slash
+  '×',   // 16: times
 ];
 
-// Math symbols we support (subset that can be recognized or mapped)
+// Map model output to math symbols we can evaluate
+export const SYMBOL_TO_MATH: Record<string, string> = {
+  '÷': '/',
+  '×': '*',
+};
+
+// Math symbols we support
 export const SYMBOL_LABELS = [
   '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
-  '+', '-', '*', '/', '=', '(', ')', '.', '^'
+  '+', '-', '*', '/', '=', '(', ')', '.', '^', '÷', '×'
 ];
 
-// Map certain letters to math symbols for recognition
+// Map certain characters if needed
 export const LETTER_TO_SYMBOL: Record<string, string> = {
-  'X': '*',  // X can mean multiply
-  'x': '*',  // x can mean multiply
+  'X': '*',
+  'x': '*',
+  '÷': '/',
+  '×': '*',
 };
 
 export type SymbolLabel = typeof SYMBOL_LABELS[number];
