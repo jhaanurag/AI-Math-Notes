@@ -1,0 +1,10 @@
+# Placeholder for trained model files
+# After training, place these files here:
+# - model.json (model architecture)
+# - group1-shardXofY.bin (model weights)
+
+# Train the model:
+# 1. Open training/train_model.py in Google Colab
+# 2. Run all cells
+# 3. Download math_model_tfjs.zip
+# 4. Extract contents here (model.json + *.bin files)
