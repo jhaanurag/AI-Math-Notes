@@ -4,9 +4,9 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Point, Stroke, Character, Expression } from '@/lib/types';
 import { calculateBoundingBox, generateId } from '@/lib/geometry';
 import { addStrokeToCharacters } from '@/lib/stroke-grouping';
-import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel } from '@/lib/recognizer';
+import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel, setUseTesseract, isTesseractEnabled, setDebugCanvas } from '@/lib/recognizer';
 import { buildExpressions, getResultPosition } from '@/lib/expression-parser';
-import { Undo2, Redo2, Trash2, Bug, BugOff, Home, Palette, Keyboard } from 'lucide-react';
+import { Undo2, Redo2, Trash2, Bug, BugOff, Home, Palette, Keyboard, ScanText } from 'lucide-react';
 import Link from 'next/link';
 
 const STROKE_COLORS = [
@@ -21,6 +21,7 @@ const STROKE_COLORS = [
 export default function CanvasPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const debugCanvasRef = useRef<HTMLCanvasElement>(null);
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   
   const [isDrawing, setIsDrawing] = useState(false);
@@ -39,6 +40,7 @@ export default function CanvasPage() {
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [undoStack, setUndoStack] = useState<{ strokes: Stroke[], characters: Character[] }[]>([]);
   const [redoStack, setRedoStack] = useState<{ strokes: Stroke[], characters: Character[] }[]>([]);
+  const [tesseractMode, setTesseractMode] = useState(false);
 
   const recognitionTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -67,6 +69,51 @@ export default function CanvasPage() {
     });
   }, []);
 
+  // Connect debug canvas when debug mode is on
+  useEffect(() => {
+    if (debugMode && debugCanvasRef.current) {
+      setDebugCanvas(debugCanvasRef.current);
+    } else {
+      setDebugCanvas(null);
+    }
+  }, [debugMode]);
+
+  // Undo handler
+  const handleUndo = useCallback(() => {
+    if (undoStack.length === 0) return;
+    
+    const lastState = undoStack[undoStack.length - 1];
+    setRedoStack(prev => [...prev, { strokes, characters }]);
+    setUndoStack(prev => prev.slice(0, -1));
+    setStrokes(lastState.strokes);
+    setCharacters(lastState.characters);
+    setExpressions(buildExpressions(lastState.characters));
+  }, [undoStack, strokes, characters]);
+
+  // Redo handler
+  const handleRedo = useCallback(() => {
+    if (redoStack.length === 0) return;
+    
+    const nextState = redoStack[redoStack.length - 1];
+    setUndoStack(prev => [...prev, { strokes, characters }]);
+    setRedoStack(prev => prev.slice(0, -1));
+    setStrokes(nextState.strokes);
+    setCharacters(nextState.characters);
+    setExpressions(buildExpressions(nextState.characters));
+  }, [redoStack, strokes, characters]);
+
+  // Clear handler
+  const handleClear = useCallback(() => {
+    if (strokes.length > 0) {
+      setUndoStack(prev => [...prev, { strokes, characters }]);
+      setRedoStack([]);
+    }
+    setStrokes([]);
+    setCharacters([]);
+    setExpressions([]);
+    setCurrentStroke([]);
+  }, [strokes, characters]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -88,6 +135,14 @@ export default function CanvasPage() {
       // D = Toggle debug
       if (e.key === 'd' && !e.ctrlKey && !e.metaKey) {
         setDebugMode(prev => !prev);
+      }
+      // T = Toggle Tesseract OCR
+      if (e.key === 't' && !e.ctrlKey && !e.metaKey) {
+        setTesseractMode(prev => {
+          const newState = !prev;
+          setUseTesseract(newState);
+          return newState;
+        });
       }
       // Escape = Close popups
       if (e.key === 'Escape') {
@@ -330,42 +385,6 @@ export default function CanvasPage() {
     scheduleRecognition();
   }, [isDrawing, currentStroke, strokes, characters, processStroke, scheduleRecognition]);
 
-  // Undo
-  const handleUndo = useCallback(() => {
-    if (undoStack.length === 0) return;
-    
-    const lastState = undoStack[undoStack.length - 1];
-    setRedoStack(prev => [...prev, { strokes, characters }]);
-    setUndoStack(prev => prev.slice(0, -1));
-    setStrokes(lastState.strokes);
-    setCharacters(lastState.characters);
-    setExpressions(buildExpressions(lastState.characters));
-  }, [undoStack, strokes, characters]);
-
-  // Redo
-  const handleRedo = useCallback(() => {
-    if (redoStack.length === 0) return;
-    
-    const nextState = redoStack[redoStack.length - 1];
-    setUndoStack(prev => [...prev, { strokes, characters }]);
-    setRedoStack(prev => prev.slice(0, -1));
-    setStrokes(nextState.strokes);
-    setCharacters(nextState.characters);
-    setExpressions(buildExpressions(nextState.characters));
-  }, [redoStack, strokes, characters]);
-
-  // Clear
-  const handleClear = useCallback(() => {
-    if (strokes.length > 0) {
-      setUndoStack(prev => [...prev, { strokes, characters }]);
-      setRedoStack([]);
-    }
-    setStrokes([]);
-    setCharacters([]);
-    setExpressions([]);
-    setCurrentStroke([]);
-  }, [strokes, characters]);
-
   return (
     <div className="h-[100dvh] w-full bg-[#050506] flex flex-col overflow-hidden touch-none">
       {/* Top toolbar */}
@@ -451,6 +470,18 @@ export default function CanvasPage() {
               </div>
             )}
           </div>
+          {/* Tesseract OCR toggle */}
+          <button
+            onClick={() => {
+              const newState = !tesseractMode;
+              setTesseractMode(newState);
+              setUseTesseract(newState);
+            }}
+            className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${tesseractMode ? 'text-cyan-400' : 'text-gray-500 hover:text-white'}`}
+            title={tesseractMode ? 'Tesseract OCR: ON (fallback for low confidence)' : 'Tesseract OCR: OFF'}
+          >
+            <ScanText className="w-5 h-5" />
+          </button>
           <button
             onClick={() => setDebugMode(!debugMode)}
             className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${debugMode ? 'text-emerald-400' : 'text-gray-500 hover:text-white'}`}
@@ -490,85 +521,16 @@ export default function CanvasPage() {
               <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">D</kbd>
             </div>
             <div className="flex justify-between gap-6">
+              <span className="text-gray-500">Tesseract OCR</span>
+              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">T</kbd>
+            </div>
+            <div className="flex justify-between gap-6">
               <span className="text-gray-500">Close</span>
               <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">Esc</kbd>
             </div>
           </div>
         </div>
       )}
-          >
-            <Undo2 className="w-5 h-5" />
-          </button>
-          <button
-            onClick={handleRedo}
-            disabled={redoStack.length === 0}
-            className="p-2 rounded-lg hover:bg-white/5 text-gray-400 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-          >
-            <Redo2 className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Status badges */}
-        <div className="flex items-center gap-2">
-          {!modelReady && (
-            <span className="bg-yellow-500/20 text-yellow-400 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider animate-pulse">
-              Loading...
-            </span>
-          )}
-          {modelReady && usingML && (
-            <span className="bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider flex items-center gap-1">
-              <span className="w-1 h-1 rounded-full bg-emerald-400" />
-              ML
-            </span>
-          )}
-          {isProcessing && (
-            <span className="bg-violet-500/10 text-violet-400 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider animate-pulse">
-              ...
-            </span>
-          )}
-        </div>
-
-        <div className="flex items-center gap-1">
-          {/* Color picker */}
-          <div className="relative">
-            <button
-              onClick={() => setShowColorPicker(!showColorPicker)}
-              className="p-2 rounded-lg hover:bg-white/5 transition-colors"
-            >
-              <Palette className="w-5 h-5" style={{ color: strokeColor }} />
-            </button>
-            {showColorPicker && (
-              <div className="absolute top-full right-0 mt-2 p-2 bg-[#15151f] rounded-lg border border-white/10 flex gap-1.5 z-20">
-                {STROKE_COLORS.map(color => (
-                  <button
-                    key={color.value}
-                    onClick={() => {
-                      setStrokeColor(color.value);
-                      setShowColorPicker(false);
-                    }}
-                    className={`w-7 h-7 rounded-full border-2 transition-transform hover:scale-110 ${
-                      strokeColor === color.value ? 'border-white scale-110' : 'border-transparent'
-                    }`}
-                    style={{ backgroundColor: color.value }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-          <button
-            onClick={() => setDebugMode(!debugMode)}
-            className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${debugMode ? 'text-green-400' : 'text-gray-400 hover:text-white'}`}
-          >
-            {debugMode ? <Bug className="w-5 h-5" /> : <BugOff className="w-5 h-5" />}
-          </button>
-          <button
-            onClick={handleClear}
-            className="p-2 rounded-lg hover:bg-red-500/10 text-gray-400 hover:text-red-400 transition-colors"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
-        </div>
-      </div>
 
       {/* Canvas area */}
       <div ref={containerRef} className="flex-1 relative">
@@ -585,6 +547,21 @@ export default function CanvasPage() {
           style={{ touchAction: 'none' }}
         />
         
+        {/* Debug preview - shows what the model sees */}
+        {debugMode && (
+          <div className="absolute bottom-4 left-4 bg-black/80 backdrop-blur-md rounded-lg border border-white/10 p-3 z-20">
+            <p className="text-[10px] text-gray-400 mb-2 uppercase tracking-wider">Model Input (28×28)</p>
+            <canvas 
+              ref={debugCanvasRef}
+              width={28}
+              height={28}
+              className="w-[112px] h-[112px] border border-white/20 rounded"
+              style={{ imageRendering: 'pixelated' }}
+            />
+            <p className="text-[10px] text-gray-500 mt-2">White on black, centered</p>
+          </div>
+        )}
+        
         {/* Empty state */}
         {strokes.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -598,12 +575,12 @@ export default function CanvasPage() {
 
       {/* Bottom bar - expression display */}
       {expressions.length > 0 && (
-        <div className="px-3 py-2 bg-black/40 backdrop-blur-md border-t border-white/[0.06]">
+        <div className="px-3 py-2 bg-black/60 backdrop-blur-md border-t border-white/[0.04]">
           <div className="flex flex-wrap gap-2 justify-center">
             {expressions.map(expr => (
-              <span key={expr.id} className="px-3 py-1.5 bg-white/[0.03] rounded-lg text-sm border border-white/[0.06] font-mono">
+              <span key={expr.id} className="px-3 py-1.5 bg-white/[0.03] rounded-lg text-sm border border-white/[0.04] font-mono">
                 <span className="text-gray-400">{expr.text}</span>
-                {expr.result && <span className="text-violet-400 font-semibold"> {expr.result}</span>}
+                {expr.result && <span className="text-amber-400 font-semibold"> {expr.result}</span>}
               </span>
             ))}
           </div>

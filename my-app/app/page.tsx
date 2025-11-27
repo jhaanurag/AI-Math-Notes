@@ -16,21 +16,21 @@ export default function Home() {
   }, []);
 
   return (
-    <main className="min-h-[100dvh] bg-[#08080c] text-white overflow-hidden font-mono flex flex-col">
+    <main className="min-h-[100dvh] bg-[#050506] text-white overflow-hidden font-mono flex flex-col">
       {/* Gradient background */}
       <div className="fixed inset-0 pointer-events-none overflow-hidden">
-        <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-blue-600/10 rounded-full blur-[120px]" />
-        <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-violet-600/10 rounded-full blur-[120px]" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-purple-600/5 rounded-full blur-[150px]" />
+        <div className="absolute top-0 left-1/4 w-[500px] h-[500px] bg-amber-600/8 rounded-full blur-[120px]" />
+        <div className="absolute bottom-0 right-1/4 w-[500px] h-[500px] bg-orange-600/8 rounded-full blur-[120px]" />
+        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[600px] h-[600px] bg-rose-600/5 rounded-full blur-[150px]" />
       </div>
 
       {/* Header */}
-      <header className="relative z-10 border-b border-white/[0.04] backdrop-blur-md bg-black/20">
+      <header className="relative z-10 border-b border-white/[0.04] backdrop-blur-md bg-black/40">
         <div className="container mx-auto px-4 py-3 flex items-center justify-between max-w-6xl">
           <div className="flex items-center gap-3">
             <div className="relative group">
-              <div className="absolute inset-0 bg-gradient-to-br from-blue-500 to-violet-600 rounded-lg blur-sm opacity-60 group-hover:opacity-80 transition-opacity" />
-              <div className="relative w-9 h-9 bg-gradient-to-br from-blue-500 to-violet-600 rounded-lg flex items-center justify-center">
+              <div className="absolute inset-0 bg-gradient-to-br from-amber-500 to-orange-600 rounded-lg blur-sm opacity-60 group-hover:opacity-80 transition-opacity" />
+              <div className="relative w-9 h-9 bg-gradient-to-br from-amber-500 to-orange-600 rounded-lg flex items-center justify-center">
                 <Calculator className="w-5 h-5" />
               </div>
             </div>
@@ -57,7 +57,7 @@ export default function Home() {
         <div className="text-center max-w-2xl mx-auto">
           {/* Badge */}
           <div className="inline-flex items-center gap-2 px-3 py-1.5 bg-white/[0.03] rounded-full border border-white/[0.06] mb-6 md:mb-8">
-            <Sparkles className="w-3.5 h-3.5 text-violet-400" />
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
             <span className="text-[11px] text-gray-400 uppercase tracking-wider">iOS Math Notes Clone</span>
           </div>
 
@@ -67,7 +67,7 @@ export default function Home() {
               Draw Math,
             </span>
             <br />
-            <span className="bg-gradient-to-r from-blue-400 via-violet-400 to-purple-400 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-amber-400 via-orange-400 to-rose-400 bg-clip-text text-transparent">
               Get Answers
             </span>
           </h2>
@@ -82,7 +82,7 @@ export default function Home() {
           <Link href="/canvas">
             <Button 
               size="lg" 
-              className="bg-gradient-to-r from-blue-500 to-violet-600 hover:from-blue-600 hover:to-violet-700 text-white border-0 px-6 md:px-8 py-5 md:py-6 text-sm md:text-base font-semibold rounded-xl shadow-lg shadow-violet-500/20 group"
+              className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white border-0 px-6 md:px-8 py-5 md:py-6 text-sm md:text-base font-semibold rounded-xl shadow-lg shadow-orange-500/20 group"
             >
               {isMobile ? (
                 <>
@@ -111,19 +111,19 @@ export default function Home() {
             icon={<Pencil className="w-4 h-4" />}
             title="Natural Drawing"
             description="Write math like on paper with touch or stylus"
-            gradient="from-emerald-500 to-green-600"
+            gradient="from-emerald-500 to-teal-600"
           />
           <FeatureCard
             icon={<Brain className="w-4 h-4" />}
             title="AI Recognition"
             description="TensorFlow.js ML model runs in your browser"
-            gradient="from-blue-500 to-cyan-600"
+            gradient="from-amber-500 to-orange-600"
           />
           <FeatureCard
             icon={<Zap className="w-4 h-4" />}
             title="Instant Results"
             description="Answers appear magically next to ="
-            gradient="from-violet-500 to-purple-600"
+            gradient="from-rose-500 to-red-600"
           />
         </div>
 

@@ -8,6 +8,72 @@ import { mergeBoundingBoxes, groupIntoLines, generateId } from './geometry';
 const math: MathJsInstance = create(all);
 
 /**
+ * Detect two consecutive minus signs at similar Y positions and merge into equals sign
+ * This handles the case when user draws '=' as two separate horizontal strokes
+ * Uses very relaxed thresholds for better detection
+ */
+function mergeDoubleMinusToEquals(characters: Character[]): Character[] {
+  if (characters.length < 2) return characters;
+  
+  // Sort by X position (center)
+  const sorted = [...characters].sort((a, b) => a.boundingBox.centerX - b.boundingBox.centerX);
+  const result: Character[] = [];
+  let i = 0;
+  
+  while (i < sorted.length) {
+    const current = sorted[i];
+    const next = sorted[i + 1];
+    
+    // Check if current and next are both minus signs
+    if (next && current.recognized === '-' && next.recognized === '-') {
+      // Calculate horizontal overlap between the two strokes
+      const overlapLeft = Math.max(current.boundingBox.minX, next.boundingBox.minX);
+      const overlapRight = Math.min(current.boundingBox.maxX, next.boundingBox.maxX);
+      const horizontalOverlap = overlapRight - overlapLeft;
+      const minWidth = Math.min(current.boundingBox.width, next.boundingBox.width);
+      const maxWidth = Math.max(current.boundingBox.width, next.boundingBox.width);
+      
+      // Check horizontal center distance
+      const horizontalCenterDist = Math.abs(current.boundingBox.centerX - next.boundingBox.centerX);
+      
+      // Check vertical separation
+      const verticalGap = Math.abs(current.boundingBox.centerY - next.boundingBox.centerY);
+      const combinedHeight = current.boundingBox.height + next.boundingBox.height;
+      
+      // RELAXED: They should be somewhat aligned horizontally
+      // Either overlapping OR centers are close relative to width
+      const isHorizontallyAligned = horizontalOverlap > minWidth * 0.2 || horizontalCenterDist < maxWidth * 0.8;
+      
+      // RELAXED: Vertical gap should be reasonable - not on top of each other, not too far
+      // Allow up to 6x combined height for very spaced out equals
+      const isVerticallyStacked = verticalGap > 3 && verticalGap < combinedHeight * 6;
+      
+      console.log(`Equals check: hOverlap=${horizontalOverlap.toFixed(0)}, hCenterDist=${horizontalCenterDist.toFixed(0)}, vGap=${verticalGap.toFixed(0)}, aligned=${isHorizontallyAligned}, stacked=${isVerticallyStacked}`);
+      
+      if (isHorizontallyAligned && isVerticallyStacked) {
+        // Merge into equals sign
+        const mergedBoundingBox = mergeBoundingBoxes([current.boundingBox, next.boundingBox]);
+        result.push({
+          id: current.id,
+          strokes: [...current.strokes, ...next.strokes],
+          boundingBox: mergedBoundingBox,
+          recognized: '=',
+          confidence: Math.min(current.confidence, next.confidence),
+        });
+        console.log('Merged two minus signs into equals!');
+        i += 2; // Skip both
+        continue;
+      }
+    }
+    
+    result.push(current);
+    i++;
+  }
+  
+  return result;
+}
+
+/**
  * Build expression string from recognized characters
  */
 export function buildExpressionString(characters: Character[]): string {
@@ -95,9 +161,12 @@ export function buildExpressions(characters: Character[]): Expression[] {
   const lines = groupIntoLines(characters);
   
   return lines.map(lineChars => {
-    const boundingBox = mergeBoundingBoxes(lineChars.map(c => c.boundingBox));
-    const text = buildExpressionString(lineChars);
-    const hasEquals = hasEqualsSign(lineChars);
+    // Detect and merge double-minus into equals
+    const mergedChars = mergeDoubleMinusToEquals(lineChars);
+    
+    const boundingBox = mergeBoundingBoxes(mergedChars.map(c => c.boundingBox));
+    const text = buildExpressionString(mergedChars);
+    const hasEquals = hasEqualsSign(mergedChars);
     
     let result: string | null = null;
     if (hasEquals) {
@@ -107,7 +176,7 @@ export function buildExpressions(characters: Character[]): Expression[] {
 
     return {
       id: generateId(),
-      characters: lineChars,
+      characters: mergedChars,
       boundingBox,
       text,
       result,
