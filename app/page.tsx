@@ -2,11 +2,14 @@
 
 import { Button } from '@/components/ui/button';
 import { Github, Pencil, Calculator, Sparkles, Zap, Brain, ArrowRight, Smartphone, Monitor } from 'lucide-react';
-import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { useEffect, useState, useCallback, useRef } from 'react';
 
 export default function Home() {
   const [isMobile, setIsMobile] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const router = useRouter();
+  const prefetchStarted = useRef(false);
 
   useEffect(() => {
     const checkMobile = () => setIsMobile(window.innerWidth < 768);
@@ -14,6 +17,29 @@ export default function Home() {
     window.addEventListener('resize', checkMobile);
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
+
+  // Prefetch TensorFlow and model when user hovers over button
+  const prefetchModel = useCallback(() => {
+    if (prefetchStarted.current) return;
+    prefetchStarted.current = true;
+    
+    // Dynamically import TensorFlow to start loading it
+    import('@tensorflow/tfjs').then(async (tf) => {
+      try {
+        await tf.setBackend('webgl');
+        await tf.ready();
+        // Prefetch the model file
+        fetch('/model/model.json');
+      } catch {
+        console.log('Prefetch preparation done');
+      }
+    });
+  }, []);
+
+  const handleNavigate = useCallback(() => {
+    setIsNavigating(true);
+    router.push('/canvas');
+  }, [router]);
 
   return (
     <main className="min-h-[100dvh] bg-[#050506] text-white overflow-hidden font-mono flex flex-col">
@@ -79,25 +105,32 @@ export default function Home() {
           </p>
 
           {/* CTA */}
-          <Link href="/canvas">
-            <Button 
-              size="lg" 
-              className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white border-0 px-6 md:px-8 py-5 md:py-6 text-sm md:text-base font-semibold rounded-xl shadow-lg shadow-orange-500/20 group"
-            >
-              {isMobile ? (
-                <>
-                  <Smartphone className="w-4 h-4 mr-2" />
-                  Start Drawing
-                </>
-              ) : (
-                <>
-                  <Monitor className="w-4 h-4 mr-2" />
-                  Open Canvas
-                </>
-              )}
-              <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />
-            </Button>
-          </Link>
+          <Button 
+            size="lg" 
+            className="bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white border-0 px-6 md:px-8 py-5 md:py-6 text-sm md:text-base font-semibold rounded-xl shadow-lg shadow-orange-500/20 group"
+            onMouseEnter={prefetchModel}
+            onTouchStart={prefetchModel}
+            onClick={handleNavigate}
+            disabled={isNavigating}
+          >
+            {isNavigating ? (
+              <>
+                <div className="w-4 h-4 mr-2 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                Loading...
+              </>
+            ) : isMobile ? (
+              <>
+                <Smartphone className="w-4 h-4 mr-2" />
+                Start Drawing
+              </>
+            ) : (
+              <>
+                <Monitor className="w-4 h-4 mr-2" />
+                Open Canvas
+              </>
+            )}
+            {!isNavigating && <ArrowRight className="w-4 h-4 ml-2 group-hover:translate-x-1 transition-transform" />}
+          </Button>
 
           {/* Demo hint */}
           <p className="text-[10px] text-gray-600 mt-4 uppercase tracking-wider">

@@ -6,7 +6,7 @@ import { calculateBoundingBox, generateId } from '@/lib/geometry';
 import { addStrokeToCharacters } from '@/lib/stroke-grouping';
 import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel, setUseTesseract, isTesseractEnabled, setDebugCanvas } from '@/lib/recognizer';
 import { buildExpressions, getResultPosition } from '@/lib/expression-parser';
-import { Undo2, Redo2, Trash2, Bug, BugOff, Home, Palette, Keyboard, ScanText } from 'lucide-react';
+import { Undo2, Redo2, Trash2, Bug, BugOff, Home, Palette, Keyboard, ScanText, Loader2 } from 'lucide-react';
 import Link from 'next/link';
 
 const STROKE_COLORS = [
@@ -32,6 +32,8 @@ export default function CanvasPage() {
   const [modelReady, setModelReady] = useState(false);
   const [usingML, setUsingML] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [isInitializing, setIsInitializing] = useState(true);
+  const [initProgress, setInitProgress] = useState('Loading...');
   
   // New features
   const [debugMode, setDebugMode] = useState(false);
@@ -61,12 +63,30 @@ export default function CanvasPage() {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Initialize model
+  // Initialize model with progress tracking
   useEffect(() => {
-    initializeModel().then(() => {
-      setModelReady(true);
-      setUsingML(isUsingMLModel());
-    });
+    let mounted = true;
+    
+    const init = async () => {
+      try {
+        setInitProgress('Initializing AI engine...');
+        await initializeModel();
+        if (mounted) {
+          setModelReady(true);
+          setUsingML(isUsingMLModel());
+          setIsInitializing(false);
+        }
+      } catch {
+        if (mounted) {
+          setIsInitializing(false);
+        }
+      }
+    };
+    
+    // Start initialization immediately
+    init();
+    
+    return () => { mounted = false; };
   }, []);
 
   // Connect debug canvas when debug mode is on
@@ -386,9 +406,27 @@ export default function CanvasPage() {
   }, [isDrawing, currentStroke, strokes, characters, processStroke, scheduleRecognition]);
 
   return (
-    <div className="h-[100dvh] w-full bg-[#050506] flex flex-col overflow-hidden touch-none">
+    <div className="h-dvh w-full bg-[#050506] flex flex-col overflow-hidden touch-none">
+      {/* Loading overlay */}
+      {isInitializing && (
+        <div className="absolute inset-0 z-50 bg-[#050506] flex flex-col items-center justify-center">
+          <div className="flex flex-col items-center gap-4">
+            <div className="relative">
+              <div className="absolute inset-0 bg-linear-to-br from-amber-500 to-orange-600 rounded-2xl blur-xl opacity-40 animate-pulse" />
+              <div className="relative w-16 h-16 bg-linear-to-br from-amber-500 to-orange-600 rounded-2xl flex items-center justify-center">
+                <Loader2 className="w-8 h-8 text-white animate-spin" />
+              </div>
+            </div>
+            <div className="text-center">
+              <p className="text-white font-medium text-lg">{initProgress}</p>
+              <p className="text-gray-500 text-sm mt-1">Preparing AI recognition model</p>
+            </div>
+          </div>
+        </div>
+      )}
+      
       {/* Top toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 bg-black/60 backdrop-blur-md border-b border-white/[0.04] z-10">
+      <div className="flex items-center justify-between px-3 py-2 bg-black/60 backdrop-blur-md border-b border-white/4 z-10">
         <div className="flex items-center gap-1">
           <Link href="/">
             <button className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-colors">
