@@ -1,6 +1,7 @@
 # Spatial Math Notes
 
 An iOS 18 Math Notes clone (the viral ios calculator app) - a web application where you can draw mathematical expressions anywhere on a canvas. The app recognizes handwriting in real-time, solves equations, and displays results next to the equals sign as you draw.
+Works offline.
 
 ![Spatial Math Notes](https://img.shields.io/badge/Next.js-15-black?style=flat-square&logo=next.js)
 ![TensorFlow.js](https://img.shields.io/badge/TensorFlow.js-4.21-orange?style=flat-square&logo=tensorflow)
