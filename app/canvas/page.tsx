@@ -4,7 +4,7 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Point, Stroke, Character, Expression } from '@/lib/types';
 import { calculateBoundingBox, generateId } from '@/lib/geometry';
 import { addStrokeToCharacters } from '@/lib/stroke-grouping';
-import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel, setUseTesseract, isTesseractEnabled, setDebugCanvas } from '@/lib/recognizer';
+import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel, setUseTesseract, setDebugCanvas } from '@/lib/recognizer';
 import { buildExpressions, getResultPosition } from '@/lib/expression-parser';
 import { Undo2, Redo2, Trash2, Bug, BugOff, Home, Palette, Keyboard, ScanText, Loader2 } from 'lucide-react';
 import Link from 'next/link';

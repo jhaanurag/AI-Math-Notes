@@ -7,12 +7,11 @@ import { Character, MODEL_LABELS, LETTER_TO_SYMBOL } from './types';
 const CANVAS_SIZE = 28;
 
 let model: tf.LayersModel | null = null;
-let isModelLoading = false;
 let modelLoadPromise: Promise<boolean> | null = null;
 let modelLoadFailed = false;
 
 // Tesseract worker (lazy loaded)
-let tesseractWorker: any = null;
+let tesseractWorker: unknown = null;
 let tesseractLoading = false;
 let useTesseract = false;
 
@@ -27,8 +26,6 @@ export async function initializeModel(): Promise<boolean> {
     return modelLoadPromise;
   }
 
-  isModelLoading = true;
-  
   modelLoadPromise = (async () => {
     try {
       await tf.setBackend('webgl');
@@ -38,12 +35,10 @@ export async function initializeModel(): Promise<boolean> {
       console.log('Loading model from /model/model.json...');
       model = await tf.loadLayersModel('/model/model.json');
       console.log('✅ Loaded pre-trained model');
-      isModelLoading = false;
       return true;
     } catch (e) {
       console.error('❌ Model loading failed:', e);
       modelLoadFailed = true;
-      isModelLoading = false;
       return false;
     }
   })();
@@ -63,14 +58,14 @@ async function initTesseract(): Promise<boolean> {
   try {
     const Tesseract = await import('tesseract.js');
     tesseractWorker = await Tesseract.createWorker('eng', 1, {
-      logger: (m: any) => {
+      logger: (m: { status: string; progress: number }) => {
         if (m.status === 'recognizing text') {
           console.log(`Tesseract: ${(m.progress * 100).toFixed(0)}%`);
         }
       }
     });
     
-    await tesseractWorker.setParameters({
+    await (tesseractWorker as { setParameters: (params: Record<string, string>) => Promise<void> }).setParameters({
       tessedit_char_whitelist: '0123456789+-*/=().',
     });
     
@@ -228,10 +223,13 @@ async function recognizeWithTesseract(character: Character): Promise<{ label: st
   
   try {
     const canvas = characterToOCRCanvas(character);
-    const { data } = await tesseractWorker.recognize(canvas);
+    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    const { data } = await (tesseractWorker as any).recognize(canvas);
     
-    const text = data.text.trim();
-    const confidence = data.confidence / 100;
+    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    const text = (data as any).text.trim();
+    /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+    const confidence = (data as any).confidence / 100;
     
     console.log(`Tesseract: "${text}" (${(confidence * 100).toFixed(0)}%)`);
     

@@ -1,6 +1,6 @@
 // Stroke grouping logic - groups strokes into characters based on spatial proximity and timing
 
-import { Stroke, Character, BoundingBox } from './types';
+import { Stroke, Character } from './types';
 import { 
   shouldGroupStrokes, 
   mergeBoundingBoxes, 
