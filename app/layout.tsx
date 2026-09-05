@@ -35,6 +35,14 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} ${caveat.variable} antialiased`}
       >
         {children}
+        <a
+          href="https://anuragjha.me"
+          target="_blank"
+          rel="author"
+          className="fixed bottom-3 right-4 z-[9999] text-[11px] text-zinc-400 hover:text-zinc-800 font-mono transition-colors"
+        >
+          by Anurag Jha
+        </a>
       </body>
     </html>
   );
