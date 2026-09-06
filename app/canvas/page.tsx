@@ -6,8 +6,8 @@ import { calculateBoundingBox, generateId } from '@/lib/geometry';
 import { addStrokeToCharacters } from '@/lib/stroke-grouping';
 import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel, setUseTesseract, setDebugCanvas } from '@/lib/recognizer';
 import { buildExpressions, getResultPosition } from '@/lib/expression-parser';
-import { Undo2, Redo2, Trash2, Bug, BugOff, Home, Palette, Keyboard, ScanText, Loader2 } from 'lucide-react';
-import Link from 'next/link';
+import { Undo2, Redo2, Trash2, Bug, BugOff, Palette, Keyboard, ScanText, Loader2, Pencil, Calculator } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
 const STROKE_COLORS = [
   { name: 'White', value: '#f0f0f0' },
@@ -43,6 +43,7 @@ export default function CanvasPage() {
   const [undoStack, setUndoStack] = useState<{ strokes: Stroke[], characters: Character[] }[]>([]);
   const [redoStack, setRedoStack] = useState<{ strokes: Stroke[], characters: Character[] }[]>([]);
   const [tesseractMode, setTesseractMode] = useState(false);
+  const [showIntro, setShowIntro] = useState(false);
 
   const recognitionTimerRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -97,6 +98,27 @@ export default function CanvasPage() {
       setDebugCanvas(null);
     }
   }, [debugMode]);
+
+  // First-time intro modal (shown once, persisted in localStorage)
+  useEffect(() => {
+    try {
+      if (!window.localStorage.getItem('mathnotes:intro-seen')) {
+        setShowIntro(true);
+      }
+    } catch {
+      // localStorage unavailable — still show the intro
+      setShowIntro(true);
+    }
+  }, []);
+
+  const dismissIntro = useCallback(() => {
+    setShowIntro(false);
+    try {
+      window.localStorage.setItem('mathnotes:intro-seen', '1');
+    } catch {
+      // localStorage unavailable — modal will just show again next session
+    }
+  }, []);
 
   // Undo handler
   const handleUndo = useCallback(() => {
@@ -168,6 +190,7 @@ export default function CanvasPage() {
       if (e.key === 'Escape') {
         setShowColorPicker(false);
         setShowShortcuts(false);
+        dismissIntro();
       }
       // ? = Show shortcuts
       if (e.key === '?') {
@@ -177,7 +200,7 @@ export default function CanvasPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, handleClear]);
+  }, [handleUndo, handleRedo, handleClear, dismissIntro]);
 
   // Redraw canvas
   useEffect(() => {
@@ -406,7 +429,7 @@ export default function CanvasPage() {
   }, [isDrawing, currentStroke, strokes, characters, processStroke, scheduleRecognition]);
 
   return (
-    <div className="h-dvh w-full bg-[#050506] flex flex-col overflow-hidden touch-none">
+    <div className="relative h-dvh w-full bg-[#050506] flex flex-col overflow-hidden touch-none">
       {/* Loading overlay */}
       {isInitializing && (
         <div className="absolute inset-0 z-50 bg-[#050506] flex flex-col items-center justify-center">
@@ -425,15 +448,53 @@ export default function CanvasPage() {
         </div>
       )}
       
+      {/* First-time intro modal */}
+      {showIntro && (
+        <div className="absolute inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-sm bg-[#0c0c0f] rounded-2xl border border-white/[0.08] p-6 shadow-2xl">
+            <div className="w-12 h-12 bg-linear-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center mx-auto mb-4">
+              <Pencil className="w-6 h-6 text-white" />
+            </div>
+            <h2 className="text-white font-bold text-lg text-center tracking-tight">Spatial Math Notes</h2>
+            <p className="text-gray-500 text-[10px] text-center mt-1 uppercase tracking-widest">Draw Math • Get Answers</p>
+
+            <div className="mt-5 space-y-2.5 text-sm">
+              <div className="flex items-start gap-2.5">
+                <Pencil className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
+                <p className="text-gray-400 leading-relaxed">Write expressions with your finger, stylus, or mouse</p>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <Calculator className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
+                <p className="text-gray-400 leading-relaxed">End with <span className="text-gray-200 font-mono">=</span> and the answer appears next to it</p>
+              </div>
+              <div className="flex items-start gap-2.5">
+                <Keyboard className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
+                <p className="text-gray-400 leading-relaxed">Press <span className="text-gray-200 font-mono">?</span> anytime for shortcuts</p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap justify-center gap-1.5 mt-5">
+              {['0-9', '+', '−', '×', '÷', '/', '=', '(', ')'].map(symbol => (
+                <span key={symbol} className="px-2 py-0.5 bg-white/[0.03] rounded-md text-[11px] text-gray-500 border border-white/[0.05]">
+                  {symbol}
+                </span>
+              ))}
+            </div>
+
+            <Button
+              onClick={dismissIntro}
+              className="w-full mt-6 bg-linear-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white border-0 py-5 text-sm font-semibold rounded-xl shadow-lg shadow-orange-500/20"
+            >
+              Start Drawing
+            </Button>
+            <p className="text-[10px] text-gray-600 text-center mt-3 uppercase tracking-wider">No account needed • Works offline</p>
+          </div>
+        </div>
+      )}
+
       {/* Top toolbar */}
       <div className="flex items-center justify-between px-3 py-2 bg-black/60 backdrop-blur-md border-b border-white/4 z-10">
         <div className="flex items-center gap-1">
-          <Link href="/">
-            <button className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-colors">
-              <Home className="w-5 h-5" />
-            </button>
-          </Link>
-          <div className="w-px h-6 bg-white/[0.06] mx-1" />
           <button
             onClick={handleUndo}
             disabled={undoStack.length === 0}

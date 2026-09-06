@@ -6,7 +6,7 @@ export default function NotFound() {
         The page you are looking for does not exist or has been moved.
       </p>
       <a 
-        href="/" 
+        href="/canvas" 
         className="px-6 py-2 bg-violet-600 hover:bg-violet-700 rounded-lg transition-colors"
       >
         Go Home
