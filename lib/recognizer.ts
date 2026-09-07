@@ -391,25 +391,48 @@ function disambiguateCharacter(
   const numStrokes = strokes.length;
   const ar = bbox.width / Math.max(bbox.height, 1);
 
-  // 1. Two-stroke '4' check
+  // 1. Two-stroke characters: '+' vs '4' vs 'x'
   if (numStrokes === 2) {
     const s1 = strokes[0];
     const s2 = strokes[1];
-    const s1Horiz = s1.boundingBox.width > s1.boundingBox.height * 0.55;
-    const s2Horiz = s2.boundingBox.width > s2.boundingBox.height * 0.55;
-    const s1Vert = s1.boundingBox.height > s1.boundingBox.width * 1.1;
-    const s2Vert = s2.boundingBox.height > s2.boundingBox.width * 1.1;
+    const b1 = s1.boundingBox;
+    const b2 = s2.boundingBox;
 
-    if ((s1Vert && s2Horiz) || (s2Vert && s1Horiz)) {
+    const s1Straight = isStraightLine(s1.points, 0.18);
+    const s2Straight = isStraightLine(s2.points, 0.18);
+
+    const s1Horiz = b1.width > b1.height * 1.05;
+    const s2Horiz = b2.width > b2.height * 1.05;
+    const s1Vert = b1.height > b1.width * 1.05;
+    const s2Vert = b2.height > b2.width * 1.05;
+
+    // Check for '+': BOTH strokes are straight lines, one horizontal, one vertical, crossing near centers
+    if (s1Straight && s2Straight && ((s1Vert && s2Horiz) || (s2Vert && s1Horiz))) {
+      const vertStroke = s1Vert ? s1 : s2;
+      const horizStroke = s1Vert ? s2 : s1;
+      const centerDistX = Math.abs(vertStroke.boundingBox.centerX - horizStroke.boundingBox.centerX);
+      const centerDistY = Math.abs(horizStroke.boundingBox.centerY - vertStroke.boundingBox.centerY);
+      if (centerDistX <= horizStroke.boundingBox.width * 0.35 && centerDistY <= vertStroke.boundingBox.height * 0.35) {
+        return { label: '+', confidence: 0.98 };
+      }
+    }
+
+    // Check for '4': One stroke is vertical stem, other has horizontal bar or is L-shaped
+    if ((s1Vert && !s1Horiz) || (s2Vert && !s2Horiz)) {
       const vertStroke = s1Vert ? s1 : s2;
       const otherStroke = s1Vert ? s2 : s1;
-      const touches =
-        vertStroke.boundingBox.minY <= otherStroke.boundingBox.maxY + 10 &&
-        vertStroke.boundingBox.maxY >= otherStroke.boundingBox.minY - 10 &&
-        vertStroke.boundingBox.minX <= otherStroke.boundingBox.maxX + 10 &&
-        vertStroke.boundingBox.maxX >= otherStroke.boundingBox.minX - 10;
-      if (touches) {
-        return { label: '4', confidence: 0.95 };
+      const vBox = vertStroke.boundingBox;
+      const oBox = otherStroke.boundingBox;
+
+      // Stem is on the right half of the character (vBox.centerX > oBox.minX + oBox.width * 0.35)
+      const stemOnRight = vBox.centerX > oBox.minX + oBox.width * 0.35;
+      const notBothStraight = !s1Straight || !s2Straight;
+      const otherStartsLeft = otherStroke.points[0] && otherStroke.points[0].x <= oBox.centerX;
+
+      if (stemOnRight && (notBothStraight || otherStartsLeft)) {
+        if (['*', '×', '/', '1', '6', '4'].includes(modelLabel)) {
+          return { label: '4', confidence: 0.95 };
+        }
       }
     }
   }
@@ -422,6 +445,33 @@ function disambiguateCharacter(
       const last = pts[pts.length - 1];
       const dx = last.x - first.x;
       const dy = last.y - first.y;
+
+      // Check if stroke is straight
+      const straight = isStraightLine(pts, 0.18);
+
+      // '1': MUST be a straight line, narrow, and predominantly vertical
+      if (straight) {
+        const isNarrow = ar <= 0.38 || bbox.width <= 18;
+        const isVertical = Math.abs(dy) > Math.abs(dx) * 1.8;
+        if (isNarrow && isVertical) {
+          if (['/', '(', ')', '7', '1'].includes(modelLabel)) {
+            return { label: '1', confidence: Math.max(modelProb, 0.95) };
+          }
+        }
+
+        // '/': forward diagonal and straight
+        if (ar >= 0.35 && ar <= 1.6) {
+          const isTopRightToBottomLeft = dx < 0 && dy > 0 && first.x >= bbox.centerX - 5;
+          const isBottomLeftToTopRight = dx > 0 && dy < 0 && first.x <= bbox.centerX + 5;
+          const isDiagonal = Math.abs(dx) >= Math.abs(dy) * 0.4 && Math.abs(dx) <= Math.abs(dy) * 2.2;
+
+          if ((isTopRightToBottomLeft || isBottomLeftToTopRight) && isDiagonal) {
+            if (['1', '/', '(', ')'].includes(modelLabel)) {
+              return { label: '/', confidence: Math.max(modelProb, 0.95) };
+            }
+          }
+        }
+      }
 
       // Check single-stroke '4'
       if (ar >= 0.35 && ar <= 1.4 && pts.length >= 4) {
@@ -452,13 +502,6 @@ function disambiguateCharacter(
         }
       }
 
-      // Check '1': narrow and predominantly vertical
-      const isNarrow = ar <= 0.38 || bbox.width <= 18;
-      const isVertical = Math.abs(dy) > Math.abs(dx) * 1.8;
-      if (isNarrow && isVertical) {
-        return { label: '1', confidence: 0.95 };
-      }
-
       // Check '7': starts top-left, moves right near top, then descends down-left
       if (first.x <= bbox.centerX + 5 && first.y <= bbox.centerY && ar >= 0.35 && ar <= 1.3) {
         let maxXNearTop = false;
@@ -475,15 +518,14 @@ function disambiguateCharacter(
         }
       }
 
-      // Check '/': forward diagonal and straight
-      if (ar >= 0.35 && ar <= 1.6 && isStraightLine(pts, 0.22)) {
-        const isTopRightToBottomLeft = dx < 0 && dy > 0 && first.x >= bbox.centerX - 5;
-        const isBottomLeftToTopRight = dx > 0 && dy < 0 && first.x <= bbox.centerX + 5;
-        const isDiagonal = Math.abs(dx) >= Math.abs(dy) * 0.4 && Math.abs(dx) <= Math.abs(dy) * 2.0;
-
-        if ((isTopRightToBottomLeft || isBottomLeftToTopRight) && isDiagonal) {
-          return { label: '/', confidence: 0.95 };
-        }
+      // If stroke is NOT straight (has loops or curves), NEVER turn it into 1 or /
+      if (!straight) {
+        if (modelLabel === '3') return { label: '3', confidence: modelProb };
+        if (modelLabel === '6') return { label: '6', confidence: modelProb };
+        if (modelLabel === '8') return { label: '8', confidence: modelProb };
+        if (modelLabel === '0') return { label: '0', confidence: modelProb };
+        if (modelLabel === '2') return { label: '2', confidence: modelProb };
+        if (modelLabel === '5') return { label: '5', confidence: modelProb };
       }
     }
   }
