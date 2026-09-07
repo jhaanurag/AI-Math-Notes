@@ -94,7 +94,64 @@ export function isTesseractEnabled(): boolean {
 /**
  * Convert character strokes to 28x28 image for ML model
  */
-function characterToImageData(character: Character): Float32Array {
+/**
+ * Render a character scaled and centered onto a 48x48 debug canvas
+ */
+export function renderCharacterToDebugCanvas(character: Character): void {
+  if (!debugCanvas) return;
+  const debugCtx = debugCanvas.getContext('2d');
+  if (!debugCtx) return;
+
+  debugCtx.fillStyle = 'black';
+  debugCtx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+
+  const bbox = character.boundingBox;
+  const padding = 6;
+  const availableSize = CANVAS_SIZE - padding * 2; // 36px
+  const maxDim = Math.max(bbox.width, bbox.height, 1);
+  const scale = availableSize / maxDim;
+
+  const offsetX = (CANVAS_SIZE / 2) - (bbox.centerX * scale);
+  const offsetY = (CANVAS_SIZE / 2) - (bbox.centerY * scale);
+
+  debugCtx.strokeStyle = 'white';
+  debugCtx.fillStyle = 'white';
+  debugCtx.lineWidth = 3.2;
+  debugCtx.lineCap = 'round';
+  debugCtx.lineJoin = 'round';
+
+  for (const stroke of character.strokes) {
+    if (stroke.points.length === 0) continue;
+    if (stroke.points.length === 1) {
+      const p = stroke.points[0];
+      debugCtx.beginPath();
+      debugCtx.arc(p.x * scale + offsetX, p.y * scale + offsetY, 1.6, 0, Math.PI * 2);
+      debugCtx.fill();
+      continue;
+    }
+
+    debugCtx.beginPath();
+    debugCtx.moveTo(stroke.points[0].x * scale + offsetX, stroke.points[0].y * scale + offsetY);
+    for (let i = 1; i < stroke.points.length - 1; i++) {
+      const midX = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+      const midY = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+      debugCtx.quadraticCurveTo(
+        stroke.points[i].x * scale + offsetX,
+        stroke.points[i].y * scale + offsetY,
+        midX * scale + offsetX,
+        midY * scale + offsetY
+      );
+    }
+    const last = stroke.points[stroke.points.length - 1];
+    debugCtx.lineTo(last.x * scale + offsetX, last.y * scale + offsetY);
+    debugCtx.stroke();
+  }
+}
+
+/**
+ * Convert character strokes to 48x48 image data for ML model
+ */
+export function characterToImageData(character: Character): Float32Array {
   const canvas = document.createElement('canvas');
   canvas.width = CANVAS_SIZE;
   canvas.height = CANVAS_SIZE;
@@ -104,43 +161,44 @@ function characterToImageData(character: Character): Float32Array {
   ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
   const bbox = character.boundingBox;
-  const padding = 4;
-  const availableSize = CANVAS_SIZE - padding * 2; // 40px glyph box, matches training
-  
-  const charWidth = Math.max(bbox.width, 10);
-  const charHeight = Math.max(bbox.height, 10);
-  
-  const scale = Math.min(availableSize / charWidth, availableSize / charHeight);
-  const finalScale = Math.min(Math.max(scale, 0.1), 2.5);
+  const padding = 6;
+  const availableSize = CANVAS_SIZE - padding * 2; // 36px
+  const maxDim = Math.max(bbox.width, bbox.height, 1);
+  const scale = availableSize / maxDim;
 
-  const scaledWidth = charWidth * finalScale;
-  const scaledHeight = charHeight * finalScale;
-
-  const offsetX = padding + (availableSize - scaledWidth) / 2 - bbox.minX * finalScale;
-  const offsetY = padding + (availableSize - scaledHeight) / 2 - bbox.minY * finalScale;
+  const offsetX = (CANVAS_SIZE / 2) - (bbox.centerX * scale);
+  const offsetY = (CANVAS_SIZE / 2) - (bbox.centerY * scale);
 
   ctx.strokeStyle = 'white';
-  ctx.lineWidth = Math.min(6, Math.max(2.5, 3.5 * finalScale));
+  ctx.fillStyle = 'white';
+  ctx.lineWidth = 3.2;
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
   for (const stroke of character.strokes) {
-    if (stroke.points.length < 2) {
-      if (stroke.points.length === 1) {
-        const p = stroke.points[0];
-        ctx.beginPath();
-        ctx.arc(p.x * finalScale + offsetX, p.y * finalScale + offsetY, ctx.lineWidth / 2, 0, Math.PI * 2);
-        ctx.fillStyle = 'white';
-        ctx.fill();
-      }
+    if (stroke.points.length === 0) continue;
+    if (stroke.points.length === 1) {
+      const p = stroke.points[0];
+      ctx.beginPath();
+      ctx.arc(p.x * scale + offsetX, p.y * scale + offsetY, 1.6, 0, Math.PI * 2);
+      ctx.fill();
       continue;
     }
 
     ctx.beginPath();
-    ctx.moveTo(stroke.points[0].x * finalScale + offsetX, stroke.points[0].y * finalScale + offsetY);
-    for (let i = 1; i < stroke.points.length; i++) {
-      ctx.lineTo(stroke.points[i].x * finalScale + offsetX, stroke.points[i].y * finalScale + offsetY);
+    ctx.moveTo(stroke.points[0].x * scale + offsetX, stroke.points[0].y * scale + offsetY);
+    for (let i = 1; i < stroke.points.length - 1; i++) {
+      const midX = (stroke.points[i].x + stroke.points[i + 1].x) / 2;
+      const midY = (stroke.points[i].y + stroke.points[i + 1].y) / 2;
+      ctx.quadraticCurveTo(
+        stroke.points[i].x * scale + offsetX,
+        stroke.points[i].y * scale + offsetY,
+        midX * scale + offsetX,
+        midY * scale + offsetY
+      );
     }
+    const last = stroke.points[stroke.points.length - 1];
+    ctx.lineTo(last.x * scale + offsetX, last.y * scale + offsetY);
     ctx.stroke();
   }
 
@@ -149,25 +207,34 @@ function characterToImageData(character: Character): Float32Array {
   for (let i = 0; i < CANVAS_SIZE * CANVAS_SIZE; i++) {
     data[i] = imageData.data[i * 4] / 255;
   }
-  
-  // Debug: show what the model sees
+
+  // Also update debug preview if debug canvas is active
   if (debugCanvas) {
     const debugCtx = debugCanvas.getContext('2d');
     if (debugCtx) {
       debugCtx.putImageData(imageData, 0, 0);
     }
   }
-  
+
   return data;
 }
 
 // Debug canvas to visualize model input
 let debugCanvas: HTMLCanvasElement | null = null;
 
-export function setDebugCanvas(canvas: HTMLCanvasElement | null) {
+export function setDebugCanvas(canvas: HTMLCanvasElement | null, initialCharacter?: Character | null) {
   debugCanvas = canvas;
+  if (debugCanvas) {
+    const debugCtx = debugCanvas.getContext('2d');
+    if (debugCtx) {
+      debugCtx.fillStyle = 'black';
+      debugCtx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
+      if (initialCharacter) {
+        renderCharacterToDebugCanvas(initialCharacter);
+      }
+    }
+  }
 }
-
 /**
  * Convert character to larger canvas for Tesseract OCR
  */
@@ -343,12 +410,14 @@ function isEqualsSign(character: Character): boolean {
  * Main recognition function
  */
 export async function recognizeCharacter(character: Character): Promise<{ label: string; confidence: number }> {
+  // Always update the debug preview canvas with this character
+  renderCharacterToDebugCanvas(character);
+
   // Check for equals sign first (model doesn't have it)
   if (isEqualsSign(character)) {
     console.log('Rule-based: = (equals sign)');
     return { label: '=', confidence: 0.85 };
   }
-  
   // If Tesseract mode is ON, use ONLY Tesseract (no ML)
   if (useTesseract) {
     const ocrResult = await recognizeWithTesseract(character);

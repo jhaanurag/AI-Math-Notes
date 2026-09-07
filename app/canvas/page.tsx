@@ -4,10 +4,26 @@ import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { Point, Stroke, Character, Expression } from '@/lib/types';
 import { calculateBoundingBox, generateId } from '@/lib/geometry';
 import { addStrokeToCharacters } from '@/lib/stroke-grouping';
-import { recognizeCharacter, initializeModel, isModelReady, isUsingMLModel, setUseTesseract, setDebugCanvas } from '@/lib/recognizer';
+import {
+  recognizeCharacter,
+  initializeModel,
+  isModelReady,
+  isUsingMLModel,
+  setUseTesseract,
+  setDebugCanvas,
+  renderCharacterToDebugCanvas,
+} from '@/lib/recognizer';
 import { buildExpressions, getResultPosition } from '@/lib/expression-parser';
-import { Undo2, Redo2, Trash2, Bug, BugOff, Palette, Keyboard, ScanText, Loader2, Pencil, Calculator } from 'lucide-react';
-import { Button } from '@/components/ui/button';
+import {
+  Undo2,
+  Redo2,
+  Trash2,
+  Bug,
+  BugOff,
+  Keyboard,
+  ScanText,
+  X,
+} from 'lucide-react';
 
 const STROKE_COLORS = [
   { name: 'White', value: '#f0f0f0' },
@@ -18,43 +34,93 @@ const STROKE_COLORS = [
   { name: 'Lime', value: '#84cc16' },
 ];
 
+/**
+ * Draw a smooth stroke using midpoint quadratic Bézier curves
+ */
+function drawSmoothStroke(
+  ctx: CanvasRenderingContext2D,
+  points: Point[],
+  strokeWidth: number
+) {
+  if (!points || points.length === 0) return;
+
+  if (points.length === 1) {
+    ctx.beginPath();
+    ctx.arc(points[0].x, points[0].y, strokeWidth / 2, 0, Math.PI * 2);
+    ctx.fill();
+    return;
+  }
+
+  if (points.length === 2) {
+    ctx.beginPath();
+    ctx.moveTo(points[0].x, points[0].y);
+    ctx.lineTo(points[1].x, points[1].y);
+    ctx.stroke();
+    return;
+  }
+
+  ctx.beginPath();
+  ctx.moveTo(points[0].x, points[0].y);
+
+  for (let i = 1; i < points.length - 1; i++) {
+    const midX = (points[i].x + points[i + 1].x) / 2;
+    const midY = (points[i].y + points[i + 1].y) / 2;
+    ctx.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+  }
+
+  const lastPoint = points[points.length - 1];
+  ctx.lineTo(lastPoint.x, lastPoint.y);
+  ctx.stroke();
+}
+
 export default function CanvasPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const debugCanvasRef = useRef<HTMLCanvasElement>(null);
+  const bgCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Drawing state refs for 60/120Hz smooth interactive drawing without React lag
+  const isDrawingRef = useRef(false);
+  const activeStrokeRef = useRef<Point[]>([]);
+  const rafIdRef = useRef<number | null>(null);
+
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
-  
-  const [isDrawing, setIsDrawing] = useState(false);
-  const [currentStroke, setCurrentStroke] = useState<Point[]>([]);
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [characters, setCharacters] = useState<Character[]>([]);
   const [expressions, setExpressions] = useState<Expression[]>([]);
   const [modelReady, setModelReady] = useState(false);
   const [usingML, setUsingML] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isInitializing, setIsInitializing] = useState(true);
-  const [initProgress, setInitProgress] = useState('Loading...');
-  
-  // New features
+
+  // UI state
   const [debugMode, setDebugMode] = useState(false);
   const [strokeColor, setStrokeColor] = useState(STROKE_COLORS[0].value);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [undoStack, setUndoStack] = useState<{ strokes: Stroke[], characters: Character[] }[]>([]);
-  const [redoStack, setRedoStack] = useState<{ strokes: Stroke[], characters: Character[] }[]>([]);
+  const [undoStack, setUndoStack] = useState<{ strokes: Stroke[]; characters: Character[] }[]>([]);
+  const [redoStack, setRedoStack] = useState<{ strokes: Stroke[]; characters: Character[] }[]>([]);
   const [tesseractMode, setTesseractMode] = useState(false);
-  const [showIntro, setShowIntro] = useState(false);
+
+  // Debug info for bottom-left preview
+  const [debugInfo, setDebugInfo] = useState<{
+    label: string | null;
+    confidence: number | null;
+    width: number;
+    height: number;
+    strokeCount: number;
+  } | null>(null);
 
   const recognitionTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Resize canvas to fill screen
+  // Resize canvas to fill container accurately with DPR
   useEffect(() => {
     const updateSize = () => {
       if (containerRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
         setCanvasSize({
-          width: Math.floor(rect.width * window.devicePixelRatio),
-          height: Math.floor(rect.height * window.devicePixelRatio),
+          width: Math.floor(rect.width * dpr),
+          height: Math.floor(rect.height * dpr),
         });
       }
     };
@@ -64,84 +130,226 @@ export default function CanvasPage() {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Initialize model with progress tracking
+  // Pre-render background grid into an offscreen canvas (ultra-fast GPU blit on frame render)
+  useEffect(() => {
+    if (canvasSize.width <= 0 || canvasSize.height <= 0) return;
+
+    const bg = document.createElement('canvas');
+    bg.width = canvasSize.width;
+    bg.height = canvasSize.height;
+    const ctx = bg.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+
+    // Clean modern dark chalkboard background
+    ctx.fillStyle = '#09090b';
+    ctx.fillRect(0, 0, bg.width, bg.height);
+
+    // Subtle, clean dot grid
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+    const gridSize = 24 * dpr;
+    const dotRadius = 0.8 * dpr;
+    for (let x = gridSize; x < bg.width; x += gridSize) {
+      for (let y = gridSize; y < bg.height; y += gridSize) {
+        ctx.beginPath();
+        ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    bgCanvasRef.current = bg;
+  }, [canvasSize]);
+
+  // Non-blocking model initialization
   useEffect(() => {
     let mounted = true;
-    
-    const init = async () => {
-      try {
-        setInitProgress('Initializing AI engine...');
-        await initializeModel();
+    initializeModel()
+      .then(() => {
         if (mounted) {
           setModelReady(true);
           setUsingML(isUsingMLModel());
-          setIsInitializing(false);
         }
-      } catch {
+      })
+      .catch(() => {
         if (mounted) {
-          setIsInitializing(false);
+          setModelReady(true);
         }
-      }
+      });
+
+    return () => {
+      mounted = false;
     };
-    
-    // Start initialization immediately
-    init();
-    
-    return () => { mounted = false; };
   }, []);
 
-  // Connect debug canvas when debug mode is on
+  // Connect or disconnect debug canvas when debugMode changes
   useEffect(() => {
     if (debugMode && debugCanvasRef.current) {
-      setDebugCanvas(debugCanvasRef.current);
+      const lastChar = characters.length > 0 ? characters[characters.length - 1] : null;
+      setDebugCanvas(debugCanvasRef.current, lastChar);
+      if (lastChar) {
+        setDebugInfo({
+          label: lastChar.recognized,
+          confidence: lastChar.confidence,
+          width: Math.round(lastChar.boundingBox.width),
+          height: Math.round(lastChar.boundingBox.height),
+          strokeCount: lastChar.strokes.length,
+        });
+      } else {
+        setDebugInfo(null);
+      }
     } else {
       setDebugCanvas(null);
     }
-  }, [debugMode]);
+  }, [debugMode, characters]);
 
-  // First-time intro modal (shown once, persisted in localStorage)
-  useEffect(() => {
-    try {
-      if (!window.localStorage.getItem('mathnotes:intro-seen')) {
-        setShowIntro(true);
+  // Render main canvas
+  const renderCanvas = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+
+    // 1. Fast background blit
+    if (bgCanvasRef.current) {
+      ctx.drawImage(bgCanvasRef.current, 0, 0);
+    } else {
+      ctx.fillStyle = '#09090b';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
+
+    // 2. Draw completed strokes
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    const strokeWidth = 2.8 * dpr;
+    ctx.lineWidth = strokeWidth;
+    ctx.strokeStyle = strokeColor;
+    ctx.fillStyle = strokeColor;
+    ctx.shadowColor = strokeColor;
+    ctx.shadowBlur = 3 * dpr;
+
+    for (const stroke of strokes) {
+      drawSmoothStroke(ctx, stroke.points, strokeWidth);
+    }
+
+    // 3. Draw active stroke (smooth real-time feedback)
+    const activePoints = activeStrokeRef.current;
+    if (activePoints.length > 0) {
+      ctx.shadowBlur = 4 * dpr;
+      drawSmoothStroke(ctx, activePoints, strokeWidth);
+    }
+
+    ctx.shadowBlur = 0;
+
+    // 4. Debug bounding boxes and labels
+    if (debugMode) {
+      for (const char of characters) {
+        const bb = char.boundingBox;
+
+        ctx.strokeStyle = char.recognized
+          ? 'rgba(34, 197, 94, 0.6)'
+          : 'rgba(251, 191, 36, 0.6)';
+        ctx.lineWidth = 1 * dpr;
+        ctx.setLineDash([4 * dpr, 4 * dpr]);
+        ctx.strokeRect(bb.minX - 4, bb.minY - 4, bb.width + 8, bb.height + 8);
+        ctx.setLineDash([]);
+
+        if (char.recognized) {
+          ctx.font = `600 ${12 * dpr}px ui-monospace, monospace`;
+          ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
+          const labelText = `${char.recognized} ${Math.round(char.confidence * 100)}%`;
+          const textWidth = ctx.measureText(labelText).width;
+          ctx.fillRect(bb.minX - 2, bb.minY - 20 * dpr, textWidth + 8, 16 * dpr);
+
+          ctx.fillStyle = '#22c55e';
+          ctx.fillText(labelText, bb.minX + 2, bb.minY - 6 * dpr);
+        }
       }
-    } catch {
-      // localStorage unavailable — still show the intro
-      setShowIntro(true);
     }
-  }, []);
 
-  const dismissIntro = useCallback(() => {
-    setShowIntro(false);
-    try {
-      window.localStorage.setItem('mathnotes:intro-seen', '1');
-    } catch {
-      // localStorage unavailable — modal will just show again next session
+    // 5. Draw handwriting expression results
+    ctx.font = `600 ${52 * dpr}px Caveat, cursive`;
+    for (const expr of expressions) {
+      if (expr.result) {
+        const pos = getResultPosition(expr);
+        if (pos) {
+          ctx.shadowColor = 'rgba(249, 115, 22, 0.5)';
+          ctx.shadowBlur = 10 * dpr;
+          ctx.fillStyle = '#fb923c';
+          ctx.fillText(expr.result, pos.x, pos.y + 18 * dpr);
+          ctx.shadowBlur = 0;
+        }
+      }
     }
-  }, []);
+  }, [strokes, characters, expressions, debugMode, strokeColor]);
+
+  // Request high-performance RAF render
+  const requestFrame = useCallback(() => {
+    if (rafIdRef.current === null) {
+      rafIdRef.current = requestAnimationFrame(() => {
+        rafIdRef.current = null;
+        renderCanvas();
+      });
+    }
+  }, [renderCanvas]);
+
+  // Trigger render when state changes
+  useEffect(() => {
+    renderCanvas();
+  }, [renderCanvas]);
 
   // Undo handler
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
-    
+
     const lastState = undoStack[undoStack.length - 1];
     setRedoStack(prev => [...prev, { strokes, characters }]);
     setUndoStack(prev => prev.slice(0, -1));
     setStrokes(lastState.strokes);
     setCharacters(lastState.characters);
     setExpressions(buildExpressions(lastState.characters));
+
+    // Update debug preview if enabled
+    if (lastState.characters.length > 0) {
+      const lastChar = lastState.characters[lastState.characters.length - 1];
+      renderCharacterToDebugCanvas(lastChar);
+      setDebugInfo({
+        label: lastChar.recognized,
+        confidence: lastChar.confidence,
+        width: Math.round(lastChar.boundingBox.width),
+        height: Math.round(lastChar.boundingBox.height),
+        strokeCount: lastChar.strokes.length,
+      });
+    } else {
+      setDebugInfo(null);
+    }
   }, [undoStack, strokes, characters]);
 
   // Redo handler
   const handleRedo = useCallback(() => {
     if (redoStack.length === 0) return;
-    
+
     const nextState = redoStack[redoStack.length - 1];
     setUndoStack(prev => [...prev, { strokes, characters }]);
     setRedoStack(prev => prev.slice(0, -1));
     setStrokes(nextState.strokes);
     setCharacters(nextState.characters);
     setExpressions(buildExpressions(nextState.characters));
+
+    if (nextState.characters.length > 0) {
+      const lastChar = nextState.characters[nextState.characters.length - 1];
+      renderCharacterToDebugCanvas(lastChar);
+      setDebugInfo({
+        label: lastChar.recognized,
+        confidence: lastChar.confidence,
+        width: Math.round(lastChar.boundingBox.width),
+        height: Math.round(lastChar.boundingBox.height),
+        strokeCount: lastChar.strokes.length,
+      });
+    }
   }, [redoStack, strokes, characters]);
 
   // Clear handler
@@ -153,46 +361,39 @@ export default function CanvasPage() {
     setStrokes([]);
     setCharacters([]);
     setExpressions([]);
-    setCurrentStroke([]);
+    setDebugInfo(null);
+    activeStrokeRef.current = [];
+    if (debugCanvasRef.current) {
+      const dCtx = debugCanvasRef.current.getContext('2d');
+      if (dCtx) {
+        dCtx.fillStyle = 'black';
+        dCtx.fillRect(0, 0, 48, 48);
+      }
+    }
   }, [strokes, characters]);
 
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Ctrl/Cmd + Z = Undo
       if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
         e.preventDefault();
         handleUndo();
       }
-      // Ctrl/Cmd + Shift + Z or Ctrl/Cmd + Y = Redo
       if ((e.ctrlKey || e.metaKey) && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) {
         e.preventDefault();
         handleRedo();
       }
-      // Ctrl/Cmd + Delete/Backspace = Clear
       if ((e.ctrlKey || e.metaKey) && (e.key === 'Delete' || e.key === 'Backspace')) {
         e.preventDefault();
         handleClear();
       }
-      // D = Toggle debug
       if (e.key === 'd' && !e.ctrlKey && !e.metaKey) {
         setDebugMode(prev => !prev);
       }
-      // T = Toggle Tesseract OCR
-      if (e.key === 't' && !e.ctrlKey && !e.metaKey) {
-        setTesseractMode(prev => {
-          const newState = !prev;
-          setUseTesseract(newState);
-          return newState;
-        });
-      }
-      // Escape = Close popups
       if (e.key === 'Escape') {
         setShowColorPicker(false);
         setShowShortcuts(false);
-        dismissIntro();
       }
-      // ? = Show shortcuts
       if (e.key === '?') {
         setShowShortcuts(prev => !prev);
       }
@@ -200,141 +401,28 @@ export default function CanvasPage() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [handleUndo, handleRedo, handleClear, dismissIntro]);
+  }, [handleUndo, handleRedo, handleClear]);
 
-  // Redraw canvas
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio;
-
-    // Create dramatic gradient background
-    const bgGradient = ctx.createRadialGradient(
-      canvas.width * 0.2, canvas.height * 0.3, 0,
-      canvas.width * 0.5, canvas.height * 0.5, canvas.width * 0.8
-    );
-    bgGradient.addColorStop(0, '#0c0c0f');
-    bgGradient.addColorStop(0.5, '#080809');
-    bgGradient.addColorStop(1, '#050506');
-    ctx.fillStyle = bgGradient;
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    // Add subtle ambient glow spots (like the reference image)
-    const drawGlow = (x: number, y: number, radius: number, color1: string, color2: string) => {
-      const glow = ctx.createRadialGradient(x, y, 0, x, y, radius);
-      glow.addColorStop(0, color1);
-      glow.addColorStop(0.5, color2);
-      glow.addColorStop(1, 'transparent');
-      ctx.fillStyle = glow;
-      ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2);
-    };
-
-    // Dramatic color glows
-    drawGlow(canvas.width * 0.15, canvas.height * 0.2, canvas.width * 0.3, 'rgba(59, 130, 246, 0.08)', 'rgba(37, 99, 235, 0.03)');
-    drawGlow(canvas.width * 0.85, canvas.height * 0.25, canvas.width * 0.35, 'rgba(249, 115, 22, 0.1)', 'rgba(234, 88, 12, 0.04)');
-    drawGlow(canvas.width * 0.7, canvas.height * 0.7, canvas.width * 0.4, 'rgba(168, 85, 247, 0.06)', 'rgba(139, 92, 246, 0.02)');
-    drawGlow(canvas.width * 0.2, canvas.height * 0.8, canvas.width * 0.25, 'rgba(236, 72, 153, 0.07)', 'rgba(219, 39, 119, 0.03)');
-
-    // Draw subtle grid
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.015)';
-    const gridSize = 28 * dpr;
-    for (let x = gridSize; x < canvas.width; x += gridSize) {
-      for (let y = gridSize; y < canvas.height; y += gridSize) {
-        ctx.beginPath();
-        ctx.arc(x, y, 0.5 * dpr, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    // Draw strokes
-    ctx.lineWidth = 2.5 * dpr;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
-
-    for (const stroke of strokes) {
-      if (stroke.points.length < 2) continue;
-      
-      ctx.strokeStyle = strokeColor;
-      ctx.shadowColor = strokeColor;
-      ctx.shadowBlur = 8 * dpr;
-      
-      ctx.beginPath();
-      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (let i = 1; i < stroke.points.length; i++) {
-        ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-      }
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-    }
-
-    // Draw current stroke
-    if (currentStroke.length > 1) {
-      ctx.strokeStyle = '#f59e0b';
-      ctx.shadowColor = '#f59e0b';
-      ctx.shadowBlur = 12 * dpr;
-      
-      ctx.beginPath();
-      ctx.moveTo(currentStroke[0].x, currentStroke[0].y);
-      for (let i = 1; i < currentStroke.length; i++) {
-        ctx.lineTo(currentStroke[i].x, currentStroke[i].y);
-      }
-      ctx.stroke();
-      ctx.shadowBlur = 0;
-    }
-
-    // Debug mode: Draw bounding boxes
-    if (debugMode) {
-      for (const char of characters) {
-        const bb = char.boundingBox;
-        
-        ctx.strokeStyle = char.recognized 
-          ? 'rgba(34, 197, 94, 0.5)' 
-          : 'rgba(251, 191, 36, 0.5)';
-        ctx.lineWidth = 1 * dpr;
-        ctx.setLineDash([4 * dpr, 4 * dpr]);
-        ctx.strokeRect(bb.minX - 4, bb.minY - 4, bb.width + 8, bb.height + 8);
-        ctx.setLineDash([]);
-        
-        if (char.recognized) {
-          ctx.font = `600 ${12 * dpr}px ui-monospace, monospace`;
-          ctx.fillStyle = 'rgba(0, 0, 0, 0.9)';
-          const labelText = `${char.recognized} ${Math.round(char.confidence * 100)}%`;
-          const textWidth = ctx.measureText(labelText).width;
-          ctx.fillRect(bb.minX - 2, bb.minY - 20 * dpr, textWidth + 8, 16 * dpr);
-          
-          ctx.fillStyle = '#22c55e';
-          ctx.fillText(labelText, bb.minX + 2, bb.minY - 6 * dpr);
-        }
-      }
-    }
-
-    // Draw results with amber/orange glow
-    ctx.font = `600 ${52 * dpr}px Caveat, cursive`;
-    for (const expr of expressions) {
-      if (expr.result) {
-        const pos = getResultPosition(expr);
-        if (pos) {
-          ctx.shadowColor = 'rgba(249, 115, 22, 0.6)';
-          ctx.shadowBlur = 16 * dpr;
-          ctx.fillStyle = '#fb923c';
-          ctx.fillText(expr.result, pos.x, pos.y + 18 * dpr);
-          ctx.shadowBlur = 0;
-        }
-      }
-    }
-
-  }, [strokes, currentStroke, characters, expressions, debugMode, strokeColor, canvasSize]);
-
-  // Process stroke
+  // Stroke processing
   const processStroke = useCallback(async (newStroke: Stroke) => {
-    setCharacters(prev => addStrokeToCharacters(prev, newStroke));
+    setCharacters(prev => {
+      const updated = addStrokeToCharacters(prev, newStroke);
+      const lastChar = updated[updated.length - 1];
+      if (lastChar) {
+        renderCharacterToDebugCanvas(lastChar);
+        setDebugInfo({
+          label: lastChar.recognized,
+          confidence: lastChar.confidence,
+          width: Math.round(lastChar.boundingBox.width),
+          height: Math.round(lastChar.boundingBox.height),
+          strokeCount: lastChar.strokes.length,
+        });
+      }
+      return updated;
+    });
   }, []);
 
-  // Recognition
+  // Recognition debouncing
   const scheduleRecognition = useCallback(() => {
     if (recognitionTimerRef.current) {
       clearTimeout(recognitionTimerRef.current);
@@ -342,9 +430,9 @@ export default function CanvasPage() {
 
     recognitionTimerRef.current = setTimeout(async () => {
       if (!isModelReady()) return;
-      
+
       setIsProcessing(true);
-      
+
       setCharacters(prev => {
         const needsRecognition = prev.filter(c => c.recognized === null);
         if (needsRecognition.length === 0) {
@@ -362,6 +450,20 @@ export default function CanvasPage() {
             const recognized = new Map(recognizedChars.map(c => [c.id, c]));
             const updated = current.map(c => recognized.get(c.id) || c);
             setExpressions(buildExpressions(updated));
+
+            // Update debug info for the most recently recognized character
+            const lastChar = updated[updated.length - 1];
+            if (lastChar) {
+              renderCharacterToDebugCanvas(lastChar);
+              setDebugInfo({
+                label: lastChar.recognized,
+                confidence: lastChar.confidence,
+                width: Math.round(lastChar.boundingBox.width),
+                height: Math.round(lastChar.boundingBox.height),
+                strokeCount: lastChar.strokes.length,
+              });
+            }
+
             return updated;
           });
           setIsProcessing(false);
@@ -372,7 +474,7 @@ export default function CanvasPage() {
     }, 250);
   }, []);
 
-  // Get canvas point
+  // Precise canvas point calculation
   const getCanvasPoint = useCallback((clientX: number, clientY: number): Point => {
     const canvas = canvasRef.current;
     if (!canvas) return { x: 0, y: 0, timestamp: Date.now() };
@@ -388,256 +490,267 @@ export default function CanvasPage() {
     };
   }, []);
 
-  // Pointer handlers
-  const handlePointerDown = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    e.preventDefault();
-    setIsDrawing(true);
-    const point = getCanvasPoint(e.clientX, e.clientY);
-    setCurrentStroke([point]);
-  }, [getCanvasPoint]);
+  // Smooth pointer events handlers with hardware coalescing
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      try {
+        (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+      } catch {}
 
-  const handlePointerMove = useCallback((e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
-    e.preventDefault();
-    const point = getCanvasPoint(e.clientX, e.clientY);
-    setCurrentStroke(prev => [...prev, point]);
-  }, [isDrawing, getCanvasPoint]);
+      isDrawingRef.current = true;
+      const point = getCanvasPoint(e.clientX, e.clientY);
+      activeStrokeRef.current = [point];
+      requestFrame();
+    },
+    [getCanvasPoint, requestFrame]
+  );
 
-  const handlePointerUp = useCallback(() => {
-    if (!isDrawing || currentStroke.length < 2) {
-      setIsDrawing(false);
-      setCurrentStroke([]);
-      return;
-    }
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (!isDrawingRef.current) return;
+      e.preventDefault();
 
-    // Save to undo stack
-    setUndoStack(prev => [...prev, { strokes, characters }]);
-    setRedoStack([]);
+      // Read coalesced events for ultra-high temporal fidelity
+      type CoalescedEventProvider = { getCoalescedEvents?: () => PointerEvent[] };
+      const provider = e.nativeEvent as unknown as CoalescedEventProvider;
+      const events: Array<{ clientX: number; clientY: number }> =
+        typeof provider.getCoalescedEvents === 'function'
+          ? provider.getCoalescedEvents()
+          : [e];
 
-    const newStroke: Stroke = {
-      id: generateId(),
-      points: currentStroke,
-      boundingBox: calculateBoundingBox(currentStroke),
-    };
+      for (const ev of events) {
+        const point = getCanvasPoint(ev.clientX, ev.clientY);
+        activeStrokeRef.current.push(point);
+      }
 
-    setStrokes(prev => [...prev, newStroke]);
-    setIsDrawing(false);
-    setCurrentStroke([]);
+      requestFrame();
+    },
+    [getCanvasPoint, requestFrame]
+  );
 
-    processStroke(newStroke);
-    scheduleRecognition();
-  }, [isDrawing, currentStroke, strokes, characters, processStroke, scheduleRecognition]);
+  const handlePointerUp = useCallback(
+    (e?: React.PointerEvent<HTMLCanvasElement>) => {
+      if (e) {
+        try {
+          (e.target as HTMLElement).releasePointerCapture?.(e.pointerId);
+        } catch {}
+      }
+
+      if (!isDrawingRef.current) return;
+      isDrawingRef.current = false;
+
+      const points = activeStrokeRef.current;
+      if (points.length < 2) {
+        activeStrokeRef.current = [];
+        requestFrame();
+        return;
+      }
+
+      // Save to undo stack
+      setUndoStack(prev => [...prev, { strokes, characters }]);
+      setRedoStack([]);
+
+      const newStroke: Stroke = {
+        id: generateId(),
+        points: [...points],
+        boundingBox: calculateBoundingBox(points),
+      };
+
+      activeStrokeRef.current = [];
+
+      setStrokes(prev => [...prev, newStroke]);
+      processStroke(newStroke);
+      scheduleRecognition();
+      requestFrame();
+    },
+    [strokes, characters, processStroke, scheduleRecognition, requestFrame]
+  );
 
   return (
-    <div className="relative h-dvh w-full bg-[#050506] flex flex-col overflow-hidden touch-none">
-      {/* Loading overlay */}
-      {isInitializing && (
-        <div className="absolute inset-0 z-50 bg-[#050506] flex flex-col items-center justify-center">
-          <div className="flex flex-col items-center gap-4">
-            <div className="relative">
-              <div className="absolute inset-0 bg-linear-to-br from-amber-500 to-orange-600 rounded-2xl blur-xl opacity-40 animate-pulse" />
-              <div className="relative w-16 h-16 bg-linear-to-br from-amber-500 to-orange-600 rounded-2xl flex items-center justify-center">
-                <Loader2 className="w-8 h-8 text-white animate-spin" />
-              </div>
-            </div>
-            <div className="text-center">
-              <p className="text-white font-medium text-lg">{initProgress}</p>
-              <p className="text-gray-500 text-sm mt-1">Preparing AI recognition model</p>
-            </div>
-          </div>
-        </div>
-      )}
-      
-      {/* First-time intro modal */}
-      {showIntro && (
-        <div className="absolute inset-0 z-40 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-sm bg-[#0c0c0f] rounded-2xl border border-white/[0.08] p-6 shadow-2xl">
-            <div className="w-12 h-12 bg-linear-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center mx-auto mb-4">
-              <Pencil className="w-6 h-6 text-white" />
-            </div>
-            <h2 className="text-white font-bold text-lg text-center tracking-tight">Spatial Math Notes</h2>
-            <p className="text-gray-500 text-[10px] text-center mt-1 uppercase tracking-widest">Draw Math • Get Answers</p>
+    <div className="relative h-dvh w-full bg-[#09090b] flex flex-col overflow-hidden select-none touch-none">
+      {/* Sleek floating pill toolbar (Apple-style minimal glassmorphism) */}
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-zinc-900/85 backdrop-blur-xl border border-white/10 shadow-xl shadow-black/50">
+        {/* Undo */}
+        <button
+          onClick={handleUndo}
+          disabled={undoStack.length === 0}
+          className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-all"
+          title="Undo (Ctrl+Z)"
+        >
+          <Undo2 className="w-4 h-4" />
+        </button>
 
-            <div className="mt-5 space-y-2.5 text-sm">
-              <div className="flex items-start gap-2.5">
-                <Pencil className="w-4 h-4 text-amber-400 mt-0.5 shrink-0" />
-                <p className="text-gray-400 leading-relaxed">Write expressions with your finger, stylus, or mouse</p>
-              </div>
-              <div className="flex items-start gap-2.5">
-                <Calculator className="w-4 h-4 text-emerald-400 mt-0.5 shrink-0" />
-                <p className="text-gray-400 leading-relaxed">End with <span className="text-gray-200 font-mono">=</span> and the answer appears next to it</p>
-              </div>
-              <div className="flex items-start gap-2.5">
-                <Keyboard className="w-4 h-4 text-cyan-400 mt-0.5 shrink-0" />
-                <p className="text-gray-400 leading-relaxed">Press <span className="text-gray-200 font-mono">?</span> anytime for shortcuts</p>
-              </div>
-            </div>
+        {/* Redo */}
+        <button
+          onClick={handleRedo}
+          disabled={redoStack.length === 0}
+          className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-all"
+          title="Redo (Ctrl+Y)"
+        >
+          <Redo2 className="w-4 h-4" />
+        </button>
 
-            <div className="flex flex-wrap justify-center gap-1.5 mt-5">
-              {['0-9', '+', '−', '×', '÷', '/', '=', '(', ')'].map(symbol => (
-                <span key={symbol} className="px-2 py-0.5 bg-white/[0.03] rounded-md text-[11px] text-gray-500 border border-white/[0.05]">
-                  {symbol}
-                </span>
+        <div className="w-px h-4 bg-white/10 mx-0.5" />
+
+        {/* Color picker */}
+        <div className="relative">
+          <button
+            onClick={() => setShowColorPicker(prev => !prev)}
+            className="p-1.5 rounded-full hover:bg-white/10 transition-all flex items-center justify-center"
+            title="Stroke color"
+          >
+            <div
+              className="w-4 h-4 rounded-full border border-white/30 transition-transform hover:scale-110"
+              style={{
+                backgroundColor: strokeColor,
+                boxShadow: `0 0 8px ${strokeColor}66`,
+              }}
+            />
+          </button>
+          {showColorPicker && (
+            <div className="absolute top-full left-1/2 -translate-x-1/2 mt-2 p-2 bg-zinc-900/95 backdrop-blur-xl rounded-2xl border border-white/10 flex gap-2 shadow-2xl z-40">
+              {STROKE_COLORS.map(color => (
+                <button
+                  key={color.value}
+                  onClick={() => {
+                    setStrokeColor(color.value);
+                    setShowColorPicker(false);
+                  }}
+                  className={`w-6 h-6 rounded-full border-2 transition-transform hover:scale-110 ${
+                    strokeColor === color.value ? 'border-white scale-110 shadow-lg' : 'border-transparent'
+                  }`}
+                  style={{
+                    backgroundColor: color.value,
+                    boxShadow: strokeColor === color.value ? `0 0 10px ${color.value}` : 'none',
+                  }}
+                  title={color.name}
+                />
               ))}
             </div>
-
-            <Button
-              onClick={dismissIntro}
-              className="w-full mt-6 bg-linear-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white border-0 py-5 text-sm font-semibold rounded-xl shadow-lg shadow-orange-500/20"
-            >
-              Start Drawing
-            </Button>
-            <p className="text-[10px] text-gray-600 text-center mt-3 uppercase tracking-wider">No account needed • Works offline</p>
-          </div>
-        </div>
-      )}
-
-      {/* Top toolbar */}
-      <div className="flex items-center justify-between px-3 py-2 bg-black/60 backdrop-blur-md border-b border-white/4 z-10">
-        <div className="flex items-center gap-1">
-          <button
-            onClick={handleUndo}
-            disabled={undoStack.length === 0}
-            className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Undo (Ctrl+Z)"
-          >
-            <Undo2 className="w-5 h-5" />
-          </button>
-          <button
-            onClick={handleRedo}
-            disabled={redoStack.length === 0}
-            className="p-2 rounded-lg hover:bg-white/5 text-gray-500 hover:text-white transition-colors disabled:opacity-30 disabled:cursor-not-allowed"
-            title="Redo (Ctrl+Y)"
-          >
-            <Redo2 className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Status badges */}
-        <div className="flex items-center gap-2">
-          {!modelReady && (
-            <span className="bg-amber-500/20 text-amber-400 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider animate-pulse">
-              Loading...
-            </span>
-          )}
-          {modelReady && usingML && (
-            <span className="bg-emerald-500/10 text-emerald-400 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider flex items-center gap-1">
-              <span className="w-1 h-1 rounded-full bg-emerald-400" />
-              ML
-            </span>
-          )}
-          {isProcessing && (
-            <span className="bg-amber-500/10 text-amber-400 px-2 py-1 rounded-md text-[10px] font-medium uppercase tracking-wider animate-pulse">
-              ...
-            </span>
           )}
         </div>
 
-        <div className="flex items-center gap-1">
-          {/* Shortcuts */}
-          <button
-            onClick={() => setShowShortcuts(!showShortcuts)}
-            className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${showShortcuts ? 'text-amber-400' : 'text-gray-500 hover:text-white'}`}
-            title="Keyboard shortcuts (?)"
-          >
-            <Keyboard className="w-5 h-5" />
-          </button>
-          {/* Color picker */}
-          <div className="relative">
-            <button
-              onClick={() => setShowColorPicker(!showColorPicker)}
-              className="p-2 rounded-lg hover:bg-white/5 transition-colors"
-              title="Stroke color"
-            >
-              <Palette className="w-5 h-5" style={{ color: strokeColor }} />
-            </button>
-            {showColorPicker && (
-              <div className="absolute top-full right-0 mt-2 p-2 bg-[#0c0c0f] rounded-lg border border-white/[0.08] flex gap-1.5 z-20 shadow-2xl">
-                {STROKE_COLORS.map(color => (
-                  <button
-                    key={color.value}
-                    onClick={() => {
-                      setStrokeColor(color.value);
-                      setShowColorPicker(false);
-                    }}
-                    className={`w-7 h-7 rounded-full border-2 transition-all hover:scale-110 ${
-                      strokeColor === color.value ? 'border-white scale-110 shadow-lg' : 'border-transparent'
-                    }`}
-                    style={{ backgroundColor: color.value, boxShadow: strokeColor === color.value ? `0 0 12px ${color.value}` : 'none' }}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
-          {/* Tesseract OCR toggle */}
-          <button
-            onClick={() => {
-              const newState = !tesseractMode;
-              setTesseractMode(newState);
-              setUseTesseract(newState);
-            }}
-            className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${tesseractMode ? 'text-cyan-400' : 'text-gray-500 hover:text-white'}`}
-            title={tesseractMode ? 'Tesseract OCR: ON (fallback for low confidence)' : 'Tesseract OCR: OFF'}
-          >
-            <ScanText className="w-5 h-5" />
-          </button>
-          <button
-            onClick={() => setDebugMode(!debugMode)}
-            className={`p-2 rounded-lg hover:bg-white/5 transition-colors ${debugMode ? 'text-emerald-400' : 'text-gray-500 hover:text-white'}`}
-            title="Debug mode (D)"
-          >
-            {debugMode ? <Bug className="w-5 h-5" /> : <BugOff className="w-5 h-5" />}
-          </button>
-          <button
-            onClick={handleClear}
-            className="p-2 rounded-lg hover:bg-red-500/10 text-gray-500 hover:text-red-400 transition-colors"
-            title="Clear (Ctrl+Delete)"
-          >
-            <Trash2 className="w-5 h-5" />
-          </button>
+        {/* Clear */}
+        <button
+          onClick={handleClear}
+          disabled={strokes.length === 0}
+          className="p-1.5 rounded-full hover:bg-red-500/15 text-zinc-400 hover:text-red-400 disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-all"
+          title="Clear (Ctrl+Delete)"
+        >
+          <Trash2 className="w-4 h-4" />
+        </button>
+
+        <div className="w-px h-4 bg-white/10 mx-0.5" />
+
+        {/* Status indicator */}
+        <div className="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/5 text-[11px] font-medium text-zinc-300">
+          <span
+            className={`w-1.5 h-1.5 rounded-full ${
+              isProcessing
+                ? 'bg-amber-400 animate-pulse'
+                : modelReady
+                ? 'bg-emerald-400'
+                : 'bg-yellow-400 animate-pulse'
+            }`}
+          />
+          <span>{isProcessing ? 'Thinking...' : modelReady ? (usingML ? 'AI (ML)' : 'AI') : 'Loading...'}</span>
         </div>
+
+        <div className="w-px h-4 bg-white/10 mx-0.5" />
+
+        {/* Tesseract OCR Toggle */}
+        <button
+          onClick={() => {
+            const newState = !tesseractMode;
+            setTesseractMode(newState);
+            setUseTesseract(newState);
+          }}
+          className={`p-1.5 rounded-full hover:bg-white/10 transition-all ${
+            tesseractMode ? 'text-cyan-400 bg-cyan-500/10' : 'text-zinc-400 hover:text-white'
+          }`}
+          title={tesseractMode ? 'Tesseract OCR active' : 'Enable Tesseract OCR'}
+        >
+          <ScanText className="w-4 h-4" />
+        </button>
+
+        {/* Debug mode toggle */}
+        <button
+          onClick={() => setDebugMode(prev => !prev)}
+          className={`p-1.5 rounded-full hover:bg-white/10 transition-all ${
+            debugMode ? 'text-emerald-400 bg-emerald-500/10' : 'text-zinc-400 hover:text-white'
+          }`}
+          title="Debug Mode (D)"
+        >
+          {debugMode ? <Bug className="w-4 h-4" /> : <BugOff className="w-4 h-4" />}
+        </button>
+
+        {/* Shortcuts toggle */}
+        <button
+          onClick={() => setShowShortcuts(prev => !prev)}
+          className={`p-1.5 rounded-full hover:bg-white/10 transition-all ${
+            showShortcuts ? 'text-amber-400 bg-amber-500/10' : 'text-zinc-400 hover:text-white'
+          }`}
+          title="Keyboard shortcuts (?)"
+        >
+          <Keyboard className="w-4 h-4" />
+        </button>
       </div>
 
-      {/* Shortcuts modal */}
+      {/* Keyboard shortcuts popup modal */}
       {showShortcuts && (
-        <div className="absolute top-14 right-3 z-30 bg-[#0c0c0f]/95 backdrop-blur-md rounded-lg border border-white/[0.08] p-4 shadow-2xl">
-          <h3 className="text-xs font-semibold text-white mb-3 uppercase tracking-wider">Keyboard Shortcuts</h3>
+        <div className="absolute top-16 right-4 z-40 w-64 bg-zinc-900/95 backdrop-blur-xl rounded-2xl border border-white/10 p-4 shadow-2xl">
+          <div className="flex items-center justify-between mb-3">
+            <h3 className="text-xs font-semibold text-zinc-200 uppercase tracking-wider">Shortcuts</h3>
+            <button
+              onClick={() => setShowShortcuts(false)}
+              className="p-1 rounded-md text-zinc-400 hover:text-white hover:bg-white/5"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
           <div className="space-y-2 text-xs">
-            <div className="flex justify-between gap-6">
-              <span className="text-gray-500">Undo</span>
-              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">Ctrl+Z</kbd>
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-400">Undo</span>
+              <kbd className="px-1.5 py-0.5 bg-white/5 rounded border border-white/10 text-zinc-300 font-mono text-[11px]">
+                Ctrl+Z
+              </kbd>
             </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-gray-500">Redo</span>
-              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">Ctrl+Y</kbd>
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-400">Redo</span>
+              <kbd className="px-1.5 py-0.5 bg-white/5 rounded border border-white/10 text-zinc-300 font-mono text-[11px]">
+                Ctrl+Y
+              </kbd>
             </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-gray-500">Clear</span>
-              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">Ctrl+Del</kbd>
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-400">Clear</span>
+              <kbd className="px-1.5 py-0.5 bg-white/5 rounded border border-white/10 text-zinc-300 font-mono text-[11px]">
+                Ctrl+Del
+              </kbd>
             </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-gray-500">Debug</span>
-              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">D</kbd>
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-400">Debug Mode</span>
+              <kbd className="px-1.5 py-0.5 bg-white/5 rounded border border-white/10 text-zinc-300 font-mono text-[11px]">
+                D
+              </kbd>
             </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-gray-500">Tesseract OCR</span>
-              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">T</kbd>
-            </div>
-            <div className="flex justify-between gap-6">
-              <span className="text-gray-500">Close</span>
-              <kbd className="px-1.5 py-0.5 bg-white/5 rounded text-gray-400 font-mono">Esc</kbd>
+            <div className="flex justify-between items-center">
+              <span className="text-zinc-400">Close</span>
+              <kbd className="px-1.5 py-0.5 bg-white/5 rounded border border-white/10 text-zinc-300 font-mono text-[11px]">
+                Esc
+              </kbd>
             </div>
           </div>
         </div>
       )}
 
-      {/* Canvas area */}
-      <div ref={containerRef} className="flex-1 relative">
+      {/* Main Canvas */}
+      <div ref={containerRef} className="flex-1 relative w-full h-full">
         <canvas
           ref={canvasRef}
           width={canvasSize.width}
           height={canvasSize.height}
-          className="absolute inset-0 w-full h-full cursor-crosshair"
+          className="absolute inset-0 w-full h-full cursor-crosshair touch-none"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -645,46 +758,67 @@ export default function CanvasPage() {
           onPointerCancel={handlePointerUp}
           style={{ touchAction: 'none' }}
         />
-        
-        {/* Debug preview - shows what the model sees */}
-        {debugMode && (
-          <div className="absolute bottom-4 left-4 bg-black/80 backdrop-blur-md rounded-lg border border-white/10 p-3 z-20">
-            <p className="text-[10px] text-gray-400 mb-2 uppercase tracking-wider">Model Input (28×28)</p>
-            <canvas 
-              ref={debugCanvasRef}
-              width={28}
-              height={28}
-              className="w-[112px] h-[112px] border border-white/20 rounded"
-              style={{ imageRendering: 'pixelated' }}
-            />
-            <p className="text-[10px] text-gray-500 mt-2">White on black, centered</p>
+
+        {/* Minimal, non-intrusive empty canvas guide */}
+        {strokes.length === 0 && (
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
+            <div className="text-center">
+              <p className="text-sm font-medium text-zinc-400 tracking-wide">Write math anywhere</p>
+              <p className="text-xs font-mono text-zinc-600 mt-1">e.g. 12 + 8 =</p>
+            </div>
           </div>
         )}
-        
-        {/* Empty state */}
-        {strokes.length === 0 && (
-          <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="text-center text-gray-600">
-              <p className="text-base font-medium tracking-wide">Draw anywhere</p>
-              <p className="text-sm text-gray-700 mt-1 font-mono">Try: 12+8=</p>
+
+        {/* Refined Debug Preview in bottom-left */}
+        {debugMode && (
+          <div className="absolute bottom-5 left-5 z-30 bg-zinc-950/90 backdrop-blur-xl rounded-2xl border border-white/10 p-3.5 shadow-2xl flex flex-col gap-2.5">
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-xs font-medium text-zinc-200">Model Input</span>
+              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-white/10 text-zinc-400">48×48</span>
+            </div>
+
+            <div className="relative w-[128px] h-[128px] bg-black rounded-xl border border-white/10 overflow-hidden flex items-center justify-center shadow-inner">
+              {/* Centering crosshairs and bounding guideline */}
+              <div className="absolute inset-0 pointer-events-none opacity-25">
+                <div className="absolute top-1/2 left-0 right-0 h-px bg-white" />
+                <div className="absolute left-1/2 top-0 bottom-0 w-px bg-white" />
+                <div className="absolute inset-2 border border-dashed border-white/60 rounded" />
+              </div>
+
+              <canvas
+                ref={debugCanvasRef}
+                width={48}
+                height={48}
+                className="w-[128px] h-[128px]"
+                style={{ imageRendering: 'pixelated' }}
+              />
+            </div>
+
+            <div className="flex flex-col gap-1 text-[11px] font-mono">
+              <div className="flex justify-between items-center text-zinc-400">
+                <span>Detected:</span>
+                <span className="text-emerald-400 font-semibold">
+                  {debugInfo?.label
+                    ? `${debugInfo.label} ${debugInfo.confidence ? `(${Math.round(debugInfo.confidence * 100)}%)` : '(Rule)'}`
+                    : isProcessing
+                    ? 'Analyzing...'
+                    : characters.length > 0
+                    ? 'Pending'
+                    : 'Draw symbol'}
+                </span>
+              </div>
+              {debugInfo && (
+                <div className="flex justify-between items-center text-[10px] text-zinc-500">
+                  <span>Bounds:</span>
+                  <span>
+                    {debugInfo.width}×{debugInfo.height}px • {debugInfo.strokeCount} strk
+                  </span>
+                </div>
+              )}
             </div>
           </div>
         )}
       </div>
-
-      {/* Bottom bar - expression display */}
-      {expressions.length > 0 && (
-        <div className="px-3 py-2 bg-black/60 backdrop-blur-md border-t border-white/[0.04]">
-          <div className="flex flex-wrap gap-2 justify-center">
-            {expressions.map(expr => (
-              <span key={expr.id} className="px-3 py-1.5 bg-white/[0.03] rounded-lg text-sm border border-white/[0.04] font-mono">
-                <span className="text-gray-400">{expr.text}</span>
-                {expr.result && <span className="text-amber-400 font-semibold"> {expr.result}</span>}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }

@@ -57,43 +57,42 @@ export function MathCanvas({ width = 800, height = 600 }: MathCanvasProps) {
       }
     }
 
+    function drawSmooth(points: Point[]) {
+      if (points.length < 2) {
+        if (points.length === 1) {
+          ctx!.beginPath();
+          ctx!.arc(points[0].x, points[0].y, 1.25, 0, Math.PI * 2);
+          ctx!.fill();
+        }
+        return;
+      }
+      ctx!.beginPath();
+      ctx!.moveTo(points[0].x, points[0].y);
+      for (let i = 1; i < points.length - 1; i++) {
+        const midX = (points[i].x + points[i + 1].x) / 2;
+        const midY = (points[i].y + points[i + 1].y) / 2;
+        ctx!.quadraticCurveTo(points[i].x, points[i].y, midX, midY);
+      }
+      ctx!.lineTo(points[points.length - 1].x, points[points.length - 1].y);
+      ctx!.stroke();
+    }
+
     // Draw all strokes with smooth lines
     ctx.strokeStyle = '#e4e4e7';
+    ctx.fillStyle = '#e4e4e7';
     ctx.lineWidth = 2.5;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
 
     for (const stroke of strokes) {
-      if (stroke.points.length < 2) continue;
-      
-      // Subtle glow for strokes
-      ctx.shadowColor = 'rgba(139, 92, 246, 0.2)';
-      ctx.shadowBlur = 6;
-      
-      ctx.beginPath();
-      ctx.moveTo(stroke.points[0].x, stroke.points[0].y);
-      for (let i = 1; i < stroke.points.length; i++) {
-        ctx.lineTo(stroke.points[i].x, stroke.points[i].y);
-      }
-      ctx.stroke();
-      
-      // Reset shadow
-      ctx.shadowBlur = 0;
+      drawSmooth(stroke.points);
     }
 
-    // Draw current stroke with active glow
-    if (currentStroke.length > 1) {
-      ctx.shadowColor = 'rgba(139, 92, 246, 0.4)';
-      ctx.shadowBlur = 10;
+    // Draw current stroke
+    if (currentStroke.length > 0) {
       ctx.strokeStyle = '#a78bfa';
-      
-      ctx.beginPath();
-      ctx.moveTo(currentStroke[0].x, currentStroke[0].y);
-      for (let i = 1; i < currentStroke.length; i++) {
-        ctx.lineTo(currentStroke[i].x, currentStroke[i].y);
-      }
-      ctx.stroke();
-      ctx.shadowBlur = 0;
+      ctx.fillStyle = '#a78bfa';
+      drawSmooth(currentStroke);
     }
 
     // Draw recognized characters with bounding boxes
