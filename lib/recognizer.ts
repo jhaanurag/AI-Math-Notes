@@ -106,8 +106,8 @@ export function renderCharacterToDebugCanvas(character: Character): void {
   debugCtx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
   const bbox = character.boundingBox;
-  const padding = 6;
-  const availableSize = CANVAS_SIZE - padding * 2; // 36px
+  const padding = 4;
+  const availableSize = CANVAS_SIZE - padding * 2; // 40px glyph box, matches training (4px margin on each side = 8px total)
   const maxDim = Math.max(bbox.width, bbox.height, 1);
   const scale = availableSize / maxDim;
 
@@ -161,8 +161,8 @@ export function characterToImageData(character: Character): Float32Array {
   ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
   const bbox = character.boundingBox;
-  const padding = 6;
-  const availableSize = CANVAS_SIZE - padding * 2; // 36px
+  const padding = 4;
+  const availableSize = CANVAS_SIZE - padding * 2; // 40px glyph box, matches training (4px margin on each side = 8px total)
   const maxDim = Math.max(bbox.width, bbox.height, 1);
   const scale = availableSize / maxDim;
 

@@ -84,6 +84,14 @@ export default function CanvasPage() {
   const activeStrokeRef = useRef<Point[]>([]);
   const rafIdRef = useRef<number | null>(null);
 
+  // Epoch to cancel in-flight recognition on undo/clear
+  const recognitionEpochRef = useRef(0);
+
+  // Data refs to prevent transient disappearance during async state updates
+  const strokesRef = useRef<Stroke[]>([]);
+  const charactersRef = useRef<Character[]>([]);
+  const expressionsRef = useRef<Expression[]>([]);
+
   const [canvasSize, setCanvasSize] = useState({ width: 800, height: 600 });
   const [strokes, setStrokes] = useState<Stroke[]>([]);
   const [characters, setCharacters] = useState<Character[]>([]);
@@ -130,36 +138,6 @@ export default function CanvasPage() {
     return () => window.removeEventListener('resize', updateSize);
   }, []);
 
-  // Pre-render background grid into an offscreen canvas (ultra-fast GPU blit on frame render)
-  useEffect(() => {
-    if (canvasSize.width <= 0 || canvasSize.height <= 0) return;
-
-    const bg = document.createElement('canvas');
-    bg.width = canvasSize.width;
-    bg.height = canvasSize.height;
-    const ctx = bg.getContext('2d');
-    if (!ctx) return;
-
-    const dpr = window.devicePixelRatio || 1;
-
-    // Clean modern dark chalkboard background
-    ctx.fillStyle = '#09090b';
-    ctx.fillRect(0, 0, bg.width, bg.height);
-
-    // Subtle, clean dot grid
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
-    const gridSize = 24 * dpr;
-    const dotRadius = 0.8 * dpr;
-    for (let x = gridSize; x < bg.width; x += gridSize) {
-      for (let y = gridSize; y < bg.height; y += gridSize) {
-        ctx.beginPath();
-        ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
-        ctx.fill();
-      }
-    }
-
-    bgCanvasRef.current = bg;
-  }, [canvasSize]);
 
   // Non-blocking model initialization
   useEffect(() => {
@@ -231,7 +209,8 @@ export default function CanvasPage() {
     ctx.shadowColor = strokeColor;
     ctx.shadowBlur = 3 * dpr;
 
-    for (const stroke of strokes) {
+    const currentStrokes = strokesRef.current.length > 0 ? strokesRef.current : strokes;
+    for (const stroke of currentStrokes) {
       drawSmoothStroke(ctx, stroke.points, strokeWidth);
     }
 
@@ -246,9 +225,11 @@ export default function CanvasPage() {
 
     // 4. Debug bounding boxes and labels
     if (debugMode) {
-      for (const char of characters) {
+      const currentChars = charactersRef.current.length > 0 ? charactersRef.current : characters;
+      for (const char of currentChars) {
+        // Only draw bounding box if character currently has strokes
+        if (!char.strokes || char.strokes.length === 0) continue;
         const bb = char.boundingBox;
-
         ctx.strokeStyle = char.recognized
           ? 'rgba(34, 197, 94, 0.6)'
           : 'rgba(251, 191, 36, 0.6)';
@@ -272,7 +253,8 @@ export default function CanvasPage() {
 
     // 5. Draw handwriting expression results
     ctx.font = `600 ${52 * dpr}px Caveat, cursive`;
-    for (const expr of expressions) {
+    const currentExprs = expressionsRef.current.length > 0 ? expressionsRef.current : expressions;
+    for (const expr of currentExprs) {
       if (expr.result) {
         const pos = getResultPosition(expr);
         if (pos) {
@@ -300,21 +282,68 @@ export default function CanvasPage() {
   useEffect(() => {
     renderCanvas();
   }, [renderCanvas]);
+  // Pre-render background grid into an offscreen canvas (ultra-fast GPU blit on frame render)
+  useEffect(() => {
+    if (canvasSize.width <= 0 || canvasSize.height <= 0) return;
+
+    const bg = document.createElement('canvas');
+    bg.width = canvasSize.width;
+    bg.height = canvasSize.height;
+    const ctx = bg.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+
+    // Clean modern dark chalkboard background
+    ctx.fillStyle = '#09090b';
+    ctx.fillRect(0, 0, bg.width, bg.height);
+
+    // Subtle, clean dot grid
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+    const gridSize = 24 * dpr;
+    const dotRadius = 0.8 * dpr;
+    for (let x = gridSize; x < bg.width; x += gridSize) {
+      for (let y = gridSize; y < bg.height; y += gridSize) {
+        ctx.beginPath();
+        ctx.arc(x, y, dotRadius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+
+    bgCanvasRef.current = bg;
+    // Immediately render canvas after background is ready so resize never leaves canvas blank
+    renderCanvas();
+  }, [canvasSize, renderCanvas]);
 
   // Undo handler
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
 
+    // Cancel in-flight recognition and pending debouncer
+    if (recognitionTimerRef.current) {
+      clearTimeout(recognitionTimerRef.current);
+      recognitionTimerRef.current = null;
+    }
+    recognitionEpochRef.current += 1;
+    setIsProcessing(false);
+
     const lastState = undoStack[undoStack.length - 1];
-    setRedoStack(prev => [...prev, { strokes, characters }]);
+    strokesRef.current = lastState.strokes;
+    charactersRef.current = lastState.characters;
+    const nextExprs = buildExpressions(lastState.characters);
+    expressionsRef.current = nextExprs;
+
+    setRedoStack(prev => [...prev, { strokes: strokesRef.current, characters: charactersRef.current }]);
     setUndoStack(prev => prev.slice(0, -1));
     setStrokes(lastState.strokes);
     setCharacters(lastState.characters);
-    setExpressions(buildExpressions(lastState.characters));
+    setExpressions(nextExprs);
+    renderCanvas();
 
     // Update debug preview if enabled
-    if (lastState.characters.length > 0) {
-      const lastChar = lastState.characters[lastState.characters.length - 1];
+    const validChars = lastState.characters.filter(c => c.strokes && c.strokes.length > 0);
+    if (validChars.length > 0) {
+      const lastChar = validChars[validChars.length - 1];
       renderCharacterToDebugCanvas(lastChar);
       setDebugInfo({
         label: lastChar.recognized,
@@ -325,22 +354,44 @@ export default function CanvasPage() {
       });
     } else {
       setDebugInfo(null);
+      if (debugCanvasRef.current) {
+        const dCtx = debugCanvasRef.current.getContext('2d');
+        if (dCtx) {
+          dCtx.fillStyle = 'black';
+          dCtx.fillRect(0, 0, 48, 48);
+        }
+      }
     }
-  }, [undoStack, strokes, characters]);
+  }, [undoStack, renderCanvas]);
 
   // Redo handler
   const handleRedo = useCallback(() => {
     if (redoStack.length === 0) return;
 
+    // Cancel in-flight recognition and pending debouncer
+    if (recognitionTimerRef.current) {
+      clearTimeout(recognitionTimerRef.current);
+      recognitionTimerRef.current = null;
+    }
+    recognitionEpochRef.current += 1;
+    setIsProcessing(false);
+
     const nextState = redoStack[redoStack.length - 1];
-    setUndoStack(prev => [...prev, { strokes, characters }]);
+    strokesRef.current = nextState.strokes;
+    charactersRef.current = nextState.characters;
+    const nextExprs = buildExpressions(nextState.characters);
+    expressionsRef.current = nextExprs;
+
+    setUndoStack(prev => [...prev, { strokes: strokesRef.current, characters: charactersRef.current }]);
     setRedoStack(prev => prev.slice(0, -1));
     setStrokes(nextState.strokes);
     setCharacters(nextState.characters);
-    setExpressions(buildExpressions(nextState.characters));
+    setExpressions(nextExprs);
+    renderCanvas();
 
-    if (nextState.characters.length > 0) {
-      const lastChar = nextState.characters[nextState.characters.length - 1];
+    const validChars = nextState.characters.filter(c => c.strokes && c.strokes.length > 0);
+    if (validChars.length > 0) {
+      const lastChar = validChars[validChars.length - 1];
       renderCharacterToDebugCanvas(lastChar);
       setDebugInfo({
         label: lastChar.recognized,
@@ -350,19 +401,29 @@ export default function CanvasPage() {
         strokeCount: lastChar.strokes.length,
       });
     }
-  }, [redoStack, strokes, characters]);
-
+  }, [redoStack, renderCanvas]);
   // Clear handler
   const handleClear = useCallback(() => {
-    if (strokes.length > 0) {
-      setUndoStack(prev => [...prev, { strokes, characters }]);
+    // Cancel in-flight recognition and pending debouncer
+    if (recognitionTimerRef.current) {
+      clearTimeout(recognitionTimerRef.current);
+      recognitionTimerRef.current = null;
+    }
+    recognitionEpochRef.current += 1;
+    setIsProcessing(false);
+
+    if (strokesRef.current.length > 0) {
+      setUndoStack(prev => [...prev, { strokes: strokesRef.current, characters: charactersRef.current }]);
       setRedoStack([]);
     }
+    strokesRef.current = [];
+    charactersRef.current = [];
+    expressionsRef.current = [];
+    activeStrokeRef.current = [];
     setStrokes([]);
     setCharacters([]);
     setExpressions([]);
     setDebugInfo(null);
-    activeStrokeRef.current = [];
     if (debugCanvasRef.current) {
       const dCtx = debugCanvasRef.current.getContext('2d');
       if (dCtx) {
@@ -370,8 +431,8 @@ export default function CanvasPage() {
         dCtx.fillRect(0, 0, 48, 48);
       }
     }
-  }, [strokes, characters]);
-
+    renderCanvas();
+  }, [renderCanvas]);
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -407,6 +468,7 @@ export default function CanvasPage() {
   const processStroke = useCallback(async (newStroke: Stroke) => {
     setCharacters(prev => {
       const updated = addStrokeToCharacters(prev, newStroke);
+      charactersRef.current = updated;
       const lastChar = updated[updated.length - 1];
       if (lastChar) {
         renderCharacterToDebugCanvas(lastChar);
@@ -426,15 +488,24 @@ export default function CanvasPage() {
   const scheduleRecognition = useCallback(() => {
     if (recognitionTimerRef.current) {
       clearTimeout(recognitionTimerRef.current);
+      recognitionTimerRef.current = null;
     }
 
+    const currentEpoch = ++recognitionEpochRef.current;
+
     recognitionTimerRef.current = setTimeout(async () => {
+      if (recognitionEpochRef.current !== currentEpoch) return;
       if (!isModelReady()) return;
 
       setIsProcessing(true);
 
       setCharacters(prev => {
-        const needsRecognition = prev.filter(c => c.recognized === null);
+        if (recognitionEpochRef.current !== currentEpoch) {
+          setIsProcessing(false);
+          return prev;
+        }
+
+        const needsRecognition = prev.filter(c => c.recognized === null && c.strokes && c.strokes.length > 0);
         if (needsRecognition.length === 0) {
           setIsProcessing(false);
           return prev;
@@ -446,13 +517,25 @@ export default function CanvasPage() {
             return { ...char, recognized: result.label, confidence: result.confidence };
           })
         ).then(recognizedChars => {
+          if (recognitionEpochRef.current !== currentEpoch) {
+            setIsProcessing(false);
+            return;
+          }
+
           setCharacters(current => {
+            if (recognitionEpochRef.current !== currentEpoch) return current;
+
             const recognized = new Map(recognizedChars.map(c => [c.id, c]));
             const updated = current.map(c => recognized.get(c.id) || c);
-            setExpressions(buildExpressions(updated));
+            const exprs = buildExpressions(updated);
+            charactersRef.current = updated;
+            expressionsRef.current = exprs;
+            setExpressions(exprs);
+            renderCanvas();
 
             // Update debug info for the most recently recognized character
-            const lastChar = updated[updated.length - 1];
+            const validChars = updated.filter(c => c.strokes && c.strokes.length > 0);
+            const lastChar = validChars[validChars.length - 1];
             if (lastChar) {
               renderCharacterToDebugCanvas(lastChar);
               setDebugInfo({
@@ -472,7 +555,7 @@ export default function CanvasPage() {
         return prev;
       });
     }, 250);
-  }, []);
+  }, [renderCanvas]);
 
   // Precise canvas point calculation
   const getCanvasPoint = useCallback((clientX: number, clientY: number): Point => {
@@ -547,24 +630,28 @@ export default function CanvasPage() {
         return;
       }
 
-      // Save to undo stack
-      setUndoStack(prev => [...prev, { strokes, characters }]);
-      setRedoStack([]);
-
       const newStroke: Stroke = {
         id: generateId(),
         points: [...points],
         boundingBox: calculateBoundingBox(points),
       };
 
+      // Immediately push to strokesRef and redraw canvas synchronously
+      // so the drawn stroke never disappears while recognition runs
+      const nextStrokes = [...strokesRef.current, newStroke];
+      strokesRef.current = nextStrokes;
       activeStrokeRef.current = [];
+      renderCanvas();
 
-      setStrokes(prev => [...prev, newStroke]);
+      // Save to undo stack
+      setUndoStack(prev => [...prev, { strokes: strokesRef.current.slice(0, -1), characters: charactersRef.current }]);
+      setRedoStack([]);
+
+      setStrokes(nextStrokes);
       processStroke(newStroke);
       scheduleRecognition();
-      requestFrame();
     },
-    [strokes, characters, processStroke, scheduleRecognition, requestFrame]
+    [processStroke, scheduleRecognition, renderCanvas, requestFrame]
   );
 
   return (
