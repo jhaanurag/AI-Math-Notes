@@ -4,7 +4,7 @@
 import * as tf from '@tensorflow/tfjs';
 import { Character, MODEL_LABELS, LETTER_TO_SYMBOL } from './types';
 
-const CANVAS_SIZE = 28;
+const CANVAS_SIZE = 48;
 
 let model: tf.LayersModel | null = null;
 let modelLoadPromise: Promise<boolean> | null = null;
@@ -104,14 +104,14 @@ function characterToImageData(character: Character): Float32Array {
   ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
 
   const bbox = character.boundingBox;
-  const padding = 3;
-  const availableSize = CANVAS_SIZE - padding * 2;
+  const padding = 4;
+  const availableSize = CANVAS_SIZE - padding * 2; // 40px glyph box, matches training
   
   const charWidth = Math.max(bbox.width, 10);
   const charHeight = Math.max(bbox.height, 10);
   
   const scale = Math.min(availableSize / charWidth, availableSize / charHeight);
-  const finalScale = Math.min(Math.max(scale, 0.1), 2);
+  const finalScale = Math.min(Math.max(scale, 0.1), 2.5);
 
   const scaledWidth = charWidth * finalScale;
   const scaledHeight = charHeight * finalScale;
@@ -120,7 +120,7 @@ function characterToImageData(character: Character): Float32Array {
   const offsetY = padding + (availableSize - scaledHeight) / 2 - bbox.minY * finalScale;
 
   ctx.strokeStyle = 'white';
-  ctx.lineWidth = Math.max(1.5, 2.5 * finalScale);
+  ctx.lineWidth = Math.min(6, Math.max(2.5, 3.5 * finalScale));
   ctx.lineCap = 'round';
   ctx.lineJoin = 'round';
 
