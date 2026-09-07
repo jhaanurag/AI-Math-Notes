@@ -2,7 +2,7 @@
 // Loads pre-trained model, no training on client
 
 import * as tf from '@tensorflow/tfjs';
-import { Character, MODEL_LABELS, LETTER_TO_SYMBOL } from './types';
+import { Point, Character, MODEL_LABELS, LETTER_TO_SYMBOL } from './types';
 
 const CANVAS_SIZE = 48;
 
@@ -354,30 +354,141 @@ function recognizeWithRules(character: Character): { label: string; confidence: 
 }
 
 /**
- * Check if '1' is actually '/' (slash)
+ * Check if a stroke is approximately a straight line
  */
-function isActuallySlash(character: Character, predictedLabel: string): boolean {
-  if (predictedLabel !== '1') return false;
-  
+function isStraightLine(pts: Point[], maxDeviationRatio = 0.22): boolean {
+  if (pts.length < 3) return true;
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  const lineLen = Math.hypot(last.x - first.x, last.y - first.y);
+  if (lineLen === 0) return false;
+
+  let maxDist = 0;
+  for (let i = 1; i < pts.length - 1; i++) {
+    const p = pts[i];
+    const dist =
+      Math.abs(
+        (last.y - first.y) * p.x -
+          (last.x - first.x) * p.y +
+          last.x * first.y -
+          last.y * first.x
+      ) / lineLen;
+    if (dist > maxDist) maxDist = dist;
+  }
+
+  return maxDist / lineLen <= maxDeviationRatio;
+}
+
+/**
+ * Disambiguate easily confused characters: 4, 1, /, 7, 6, *
+ */
+function disambiguateCharacter(
+  character: Character,
+  modelLabel: string,
+  modelProb: number
+): { label: string; confidence: number } {
   const { strokes, boundingBox: bbox } = character;
-  if (strokes.length !== 1) return false;
-  
-  const stroke = strokes[0];
-  if (stroke.points.length < 3) return false;
-  
-  const first = stroke.points[0];
-  const last = stroke.points[stroke.points.length - 1];
-  
-  const dx = last.x - first.x;
-  const dy = last.y - first.y;
-  const angle = Math.atan2(dy, dx) * (180 / Math.PI);
-  
-  const isForwardSlash = (angle > 100 && angle < 170) || (angle > -80 && angle < -10);
-  const aspectRatio = bbox.width / Math.max(bbox.height, 1);
-  const hasSlashAspect = aspectRatio > 0.2 && aspectRatio < 0.8;
-  const hasDiagonalMovement = Math.abs(dx) > Math.abs(dy) * 0.25;
-  
-  return isForwardSlash && hasSlashAspect && hasDiagonalMovement;
+  const numStrokes = strokes.length;
+  const ar = bbox.width / Math.max(bbox.height, 1);
+
+  // 1. Two-stroke '4' check
+  if (numStrokes === 2) {
+    const s1 = strokes[0];
+    const s2 = strokes[1];
+    const s1Horiz = s1.boundingBox.width > s1.boundingBox.height * 0.55;
+    const s2Horiz = s2.boundingBox.width > s2.boundingBox.height * 0.55;
+    const s1Vert = s1.boundingBox.height > s1.boundingBox.width * 1.1;
+    const s2Vert = s2.boundingBox.height > s2.boundingBox.width * 1.1;
+
+    if ((s1Vert && s2Horiz) || (s2Vert && s1Horiz)) {
+      const vertStroke = s1Vert ? s1 : s2;
+      const otherStroke = s1Vert ? s2 : s1;
+      const touches =
+        vertStroke.boundingBox.minY <= otherStroke.boundingBox.maxY + 10 &&
+        vertStroke.boundingBox.maxY >= otherStroke.boundingBox.minY - 10 &&
+        vertStroke.boundingBox.minX <= otherStroke.boundingBox.maxX + 10 &&
+        vertStroke.boundingBox.maxX >= otherStroke.boundingBox.minX - 10;
+      if (touches) {
+        return { label: '4', confidence: 0.95 };
+      }
+    }
+  }
+
+  // 2. Single stroke geometric analysis
+  if (numStrokes === 1) {
+    const pts = strokes[0].points;
+    if (pts.length >= 2) {
+      const first = pts[0];
+      const last = pts[pts.length - 1];
+      const dx = last.x - first.x;
+      const dy = last.y - first.y;
+
+      // Check single-stroke '4'
+      if (ar >= 0.35 && ar <= 1.4 && pts.length >= 4) {
+        let hasHorizBar = false;
+        let horizY = 0;
+        for (let i = 1; i < pts.length; i++) {
+          const segDx = pts[i].x - pts[i - 1].x;
+          const segDy = Math.abs(pts[i].y - pts[i - 1].y);
+          const relY = (pts[i].y - bbox.minY) / bbox.height;
+          if (segDx > 3 && segDx > segDy * 1.2 && relY > 0.25 && relY < 0.85) {
+            hasHorizBar = true;
+            horizY = pts[i].y;
+            break;
+          }
+        }
+        if (hasHorizBar) {
+          let hasRightDownStem = false;
+          for (const p of pts) {
+            const relX = (p.x - bbox.minX) / bbox.width;
+            if (p.y > horizY + 4 && relX > 0.35) {
+              hasRightDownStem = true;
+              break;
+            }
+          }
+          if (hasRightDownStem) {
+            return { label: '4', confidence: 0.95 };
+          }
+        }
+      }
+
+      // Check '1': narrow and predominantly vertical
+      const isNarrow = ar <= 0.38 || bbox.width <= 18;
+      const isVertical = Math.abs(dy) > Math.abs(dx) * 1.8;
+      if (isNarrow && isVertical) {
+        return { label: '1', confidence: 0.95 };
+      }
+
+      // Check '7': starts top-left, moves right near top, then descends down-left
+      if (first.x <= bbox.centerX + 5 && first.y <= bbox.centerY && ar >= 0.35 && ar <= 1.3) {
+        let maxXNearTop = false;
+        for (const p of pts) {
+          if (p.x >= bbox.maxX - 8 && p.y <= bbox.minY + bbox.height * 0.45) {
+            maxXNearTop = true;
+            break;
+          }
+        }
+        if (maxXNearTop && last.y >= bbox.maxY - 15 && last.x < bbox.maxX - 8) {
+          if (modelLabel === '7' || modelLabel === '/' || modelLabel === '1' || modelLabel === ')') {
+            return { label: '7', confidence: 0.95 };
+          }
+        }
+      }
+
+      // Check '/': forward diagonal and straight
+      if (ar >= 0.35 && ar <= 1.6 && isStraightLine(pts, 0.22)) {
+        const isTopRightToBottomLeft = dx < 0 && dy > 0 && first.x >= bbox.centerX - 5;
+        const isBottomLeftToTopRight = dx > 0 && dy < 0 && first.x <= bbox.centerX + 5;
+        const isDiagonal = Math.abs(dx) >= Math.abs(dy) * 0.4 && Math.abs(dx) <= Math.abs(dy) * 2.0;
+
+        if ((isTopRightToBottomLeft || isBottomLeftToTopRight) && isDiagonal) {
+          return { label: '/', confidence: 0.95 };
+        }
+      }
+    }
+  }
+
+  return { label: modelLabel, confidence: modelProb };
 }
 
 /**
@@ -435,12 +546,7 @@ export async function recognizeCharacter(character: Character): Promise<{ label:
   if (useTesseract) {
     const ocrResult = await recognizeWithTesseract(character);
     if (ocrResult) {
-      // Post-process: check if '1' is actually '/'
-      if (isActuallySlash(character, ocrResult.label)) {
-        console.log('Post-process: 1 → /');
-        return { label: '/', confidence: ocrResult.confidence };
-      }
-      return ocrResult;
+      return disambiguateCharacter(character, ocrResult.label, ocrResult.confidence);
     }
     // Fallback to rules if Tesseract fails
     return recognizeWithRules(character);
@@ -471,11 +577,10 @@ export async function recognizeCharacter(character: Character): Promise<{ label:
 
       let label = MODEL_LABELS[maxIdx] || '?';
       
-      // Only post-processing: check if '1' is actually '/'
-      if (isActuallySlash(character, label)) {
-        console.log('Post-process: 1 → /');
-        label = '/';
-      }
+      // Disambiguate easily confused characters (4, 1, /, 7)
+      const disambiguated = disambiguateCharacter(character, label, maxProb);
+      label = disambiguated.label;
+      maxProb = disambiguated.confidence;
       
       if (LETTER_TO_SYMBOL[label]) {
         label = LETTER_TO_SYMBOL[label];
