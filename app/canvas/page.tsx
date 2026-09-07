@@ -13,7 +13,7 @@ import {
   setDebugCanvas,
   renderCharacterToDebugCanvas,
 } from '@/lib/recognizer';
-import { buildExpressions, getResultPosition } from '@/lib/expression-parser';
+import { buildExpressions, getResultPosition, mergeDoubleMinusToEquals } from '@/lib/expression-parser';
 import {
   Undo2,
   Redo2,
@@ -105,7 +105,6 @@ export default function CanvasPage() {
   const [strokeColor, setStrokeColor] = useState(STROKE_COLORS[0].value);
   const [showColorPicker, setShowColorPicker] = useState(false);
   const [showShortcuts, setShowShortcuts] = useState(false);
-  const [undoStack, setUndoStack] = useState<{ strokes: Stroke[]; characters: Character[] }[]>([]);
   const [redoStack, setRedoStack] = useState<{ strokes: Stroke[]; characters: Character[] }[]>([]);
   const [tesseractMode, setTesseractMode] = useState(false);
 
@@ -315,10 +314,8 @@ export default function CanvasPage() {
     renderCanvas();
   }, [canvasSize, renderCanvas]);
 
-  // Undo handler
+  // Character-level Undo handler: completely removes the last drawn character and all its strokes
   const handleUndo = useCallback(() => {
-    if (undoStack.length === 0) return;
-
     // Cancel in-flight recognition and pending debouncer
     if (recognitionTimerRef.current) {
       clearTimeout(recognitionTimerRef.current);
@@ -327,30 +324,57 @@ export default function CanvasPage() {
     recognitionEpochRef.current += 1;
     setIsProcessing(false);
 
-    const lastState = undoStack[undoStack.length - 1];
-    strokesRef.current = lastState.strokes;
-    charactersRef.current = lastState.characters;
-    const nextExprs = buildExpressions(lastState.characters);
+    const currentChars = charactersRef.current;
+    if (currentChars.length === 0 && strokesRef.current.length === 0) return;
+
+    // Save current state to redo stack
+    setRedoStack(prev => [
+      ...prev,
+      {
+        strokes: [...strokesRef.current],
+        characters: charactersRef.current.map(c => ({
+          ...c,
+          strokes: [...c.strokes],
+          boundingBox: { ...c.boundingBox },
+        })),
+      },
+    ]);
+
+    // Find and remove the entire last character
+    const lastChar = currentChars[currentChars.length - 1];
+    let remainingStrokes: Stroke[] = [];
+    let remainingChars: Character[] = [];
+
+    if (lastChar && lastChar.strokes && lastChar.strokes.length > 0) {
+      const lastCharStrokeIds = new Set(lastChar.strokes.map(s => s.id));
+      remainingStrokes = strokesRef.current.filter(s => !lastCharStrokeIds.has(s.id));
+      remainingChars = currentChars.slice(0, -1);
+    } else {
+      remainingStrokes = strokesRef.current.slice(0, -1);
+      remainingChars = currentChars.slice(0, -1);
+    }
+
+    strokesRef.current = remainingStrokes;
+    charactersRef.current = remainingChars;
+    const nextExprs = buildExpressions(remainingChars);
     expressionsRef.current = nextExprs;
 
-    setRedoStack(prev => [...prev, { strokes: strokesRef.current, characters: charactersRef.current }]);
-    setUndoStack(prev => prev.slice(0, -1));
-    setStrokes(lastState.strokes);
-    setCharacters(lastState.characters);
+    setStrokes(remainingStrokes);
+    setCharacters(remainingChars);
     setExpressions(nextExprs);
     renderCanvas();
 
-    // Update debug preview if enabled
-    const validChars = lastState.characters.filter(c => c.strokes && c.strokes.length > 0);
+    // Update debug preview for the preceding character
+    const validChars = remainingChars.filter(c => c.strokes && c.strokes.length > 0);
     if (validChars.length > 0) {
-      const lastChar = validChars[validChars.length - 1];
-      renderCharacterToDebugCanvas(lastChar);
+      const prevChar = validChars[validChars.length - 1];
+      renderCharacterToDebugCanvas(prevChar);
       setDebugInfo({
-        label: lastChar.recognized,
-        confidence: lastChar.confidence,
-        width: Math.round(lastChar.boundingBox.width),
-        height: Math.round(lastChar.boundingBox.height),
-        strokeCount: lastChar.strokes.length,
+        label: prevChar.recognized,
+        confidence: prevChar.confidence,
+        width: Math.round(prevChar.boundingBox.width),
+        height: Math.round(prevChar.boundingBox.height),
+        strokeCount: prevChar.strokes.length,
       });
     } else {
       setDebugInfo(null);
@@ -362,7 +386,7 @@ export default function CanvasPage() {
         }
       }
     }
-  }, [undoStack, renderCanvas]);
+  }, [renderCanvas]);
 
   // Redo handler
   const handleRedo = useCallback(() => {
@@ -377,13 +401,13 @@ export default function CanvasPage() {
     setIsProcessing(false);
 
     const nextState = redoStack[redoStack.length - 1];
+    setRedoStack(prev => prev.slice(0, -1));
+
     strokesRef.current = nextState.strokes;
     charactersRef.current = nextState.characters;
     const nextExprs = buildExpressions(nextState.characters);
     expressionsRef.current = nextExprs;
 
-    setUndoStack(prev => [...prev, { strokes: strokesRef.current, characters: charactersRef.current }]);
-    setRedoStack(prev => prev.slice(0, -1));
     setStrokes(nextState.strokes);
     setCharacters(nextState.characters);
     setExpressions(nextExprs);
@@ -413,8 +437,17 @@ export default function CanvasPage() {
     setIsProcessing(false);
 
     if (strokesRef.current.length > 0) {
-      setUndoStack(prev => [...prev, { strokes: strokesRef.current, characters: charactersRef.current }]);
-      setRedoStack([]);
+      setRedoStack(prev => [
+        ...prev,
+        {
+          strokes: [...strokesRef.current],
+          characters: charactersRef.current.map(c => ({
+            ...c,
+            strokes: [...c.strokes],
+            boundingBox: { ...c.boundingBox },
+          })),
+        },
+      ]);
     }
     strokesRef.current = [];
     charactersRef.current = [];
@@ -524,15 +557,15 @@ export default function CanvasPage() {
 
           setCharacters(current => {
             if (recognitionEpochRef.current !== currentEpoch) return current;
-
             const recognized = new Map(recognizedChars.map(c => [c.id, c]));
-            const updated = current.map(c => recognized.get(c.id) || c);
+            let updated = current.map(c => recognized.get(c.id) || c);
+            // Auto-merge any stacked horizontal strokes into equals signs
+            updated = mergeDoubleMinusToEquals(updated);
             const exprs = buildExpressions(updated);
             charactersRef.current = updated;
             expressionsRef.current = exprs;
             setExpressions(exprs);
             renderCanvas();
-
             // Update debug info for the most recently recognized character
             const validChars = updated.filter(c => c.strokes && c.strokes.length > 0);
             const lastChar = validChars[validChars.length - 1];
@@ -643,8 +676,6 @@ export default function CanvasPage() {
       activeStrokeRef.current = [];
       renderCanvas();
 
-      // Save to undo stack
-      setUndoStack(prev => [...prev, { strokes: strokesRef.current.slice(0, -1), characters: charactersRef.current }]);
       setRedoStack([]);
 
       setStrokes(nextStrokes);
@@ -661,8 +692,7 @@ export default function CanvasPage() {
         {/* Undo */}
         <button
           onClick={handleUndo}
-          disabled={undoStack.length === 0}
-          className="p-1.5 rounded-full hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed transition-all"
+          disabled={strokes.length === 0 && characters.length === 0}
           title="Undo (Ctrl+Z)"
         >
           <Undo2 className="w-4 h-4" />

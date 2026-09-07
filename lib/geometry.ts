@@ -121,7 +121,6 @@ export function shouldGroupStrokes(stroke1: Stroke, stroke2: Stroke): boolean {
   // For multi-stroke characters like + or =
   // The strokes must be very close AND have significant overlap
   const avgWidth = (box1.width + box2.width) / 2;
-  const avgHeight = (box1.height + box2.height) / 2;
   
   // Calculate how much one stroke is "inside" the other
   // For + sign: horizontal stroke's center should be inside vertical stroke's Y range and vice versa
@@ -139,12 +138,28 @@ export function shouldGroupStrokes(stroke1: Stroke, stroke2: Stroke): boolean {
   const stroke2FirstTime = stroke2.points[0]?.timestamp || 0;
   const timeDiff = Math.abs(stroke2FirstTime - stroke1LastTime);
   const isVeryQuick = timeDiff < 500;
-  
-  // For = sign: two horizontal strokes stacked vertically
-  const bothHorizontal = box1.width > box1.height * 1.5 && box2.width > box2.height * 1.5;
-  const stackedVertically = centerDistY < Math.max(avgHeight, 30) && centerDistX < Math.min(avgWidth * 0.5, 20);
-  const isEqualsSign = bothHorizontal && stackedVertically && overlapX > avgWidth * 0.5;
-  
+  // For = sign: two roughly horizontal strokes stacked vertically
+  const p1First = stroke1.points[0];
+  const p1Last = stroke1.points[stroke1.points.length - 1];
+  const p2First = stroke2.points[0];
+  const p2Last = stroke2.points[stroke2.points.length - 1];
+
+  const dx1 = p1First && p1Last ? Math.abs(p1Last.x - p1First.x) : box1.width;
+  const dy1 = p1First && p1Last ? Math.abs(p1Last.y - p1First.y) : box1.height;
+  const dx2 = p2First && p2Last ? Math.abs(p2Last.x - p2First.x) : box2.width;
+  const dy2 = p2First && p2Last ? Math.abs(p2Last.y - p2First.y) : box2.height;
+
+  const stroke1IsHorizontal = (dx1 >= dy1 * 0.8) || (box1.width > box1.height * 1.05);
+  const stroke2IsHorizontal = (dx2 >= dy2 * 0.8) || (box2.width > box2.height * 1.05);
+
+  const isEqualsSign = (() => {
+    if (!stroke1IsHorizontal || !stroke2IsHorizontal) return false;
+    const maxW = Math.max(box1.width, box2.width);
+    const isXAligned = (overlapX > avgWidth * 0.25) || (centerDistX < maxW * 0.75);
+    const isYStacked = (centerDistY >= 4) && (centerDistY <= Math.max(maxW * 1.5, 90));
+    return isXAligned && isYStacked;
+  })();
+
   // Group if:
   // 1. Strokes physically cross each other (+ sign)
   // 2. Strokes are = sign pattern

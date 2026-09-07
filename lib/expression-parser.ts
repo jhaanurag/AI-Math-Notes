@@ -12,7 +12,7 @@ const math: MathJsInstance = create(all);
  * This handles the case when user draws '=' as two separate horizontal strokes
  * Uses very relaxed thresholds for better detection
  */
-function mergeDoubleMinusToEquals(characters: Character[]): Character[] {
+export function mergeDoubleMinusToEquals(characters: Character[]): Character[] {
   if (characters.length < 2) return characters;
   
   // Sort by X position (center)
@@ -24,8 +24,13 @@ function mergeDoubleMinusToEquals(characters: Character[]): Character[] {
     const current = sorted[i];
     const next = sorted[i + 1];
     
-    // Check if current and next are both minus signs
-    if (next && current.recognized === '-' && next.recognized === '-') {
+    // Check if current and next are both minus signs or horizontal single-stroke marks
+    const isHoriz1 = current.recognized === '-' ||
+      (current.strokes.length === 1 && current.boundingBox.width > current.boundingBox.height * 1.05 && ['1', '/', '-', '?'].includes(current.recognized || ''));
+    const isHoriz2 = next && (next.recognized === '-' ||
+      (next.strokes.length === 1 && next.boundingBox.width > next.boundingBox.height * 1.05 && ['1', '/', '-', '?'].includes(next.recognized || '')));
+
+    if (next && isHoriz1 && isHoriz2) {
       // Calculate horizontal overlap between the two strokes
       const overlapLeft = Math.max(current.boundingBox.minX, next.boundingBox.minX);
       const overlapRight = Math.min(current.boundingBox.maxX, next.boundingBox.maxX);

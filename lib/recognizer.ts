@@ -386,24 +386,37 @@ function isActuallySlash(character: Character, predictedLabel: string): boolean 
 function isEqualsSign(character: Character): boolean {
   const { strokes, boundingBox: bbox } = character;
   if (strokes.length !== 2) return false;
-  
-  const aspectRatio = bbox.width / Math.max(bbox.height, 1);
-  if (aspectRatio < 1.2) return false;
-  
-  for (const stroke of strokes) {
-    if (stroke.points.length < 2) return false;
-    const first = stroke.points[0];
-    const last = stroke.points[stroke.points.length - 1];
-    const dx = Math.abs(last.x - first.x);
-    const dy = Math.abs(last.y - first.y);
-    if (dy > dx * 0.5) return false;
-  }
-  
-  const stroke1Center = (strokes[0].boundingBox.minY + strokes[0].boundingBox.maxY) / 2;
-  const stroke2Center = (strokes[1].boundingBox.minY + strokes[1].boundingBox.maxY) / 2;
+
+  const stroke1 = strokes[0];
+  const stroke2 = strokes[1];
+  if (stroke1.points.length < 2 || stroke2.points.length < 2) return false;
+
+  const p1First = stroke1.points[0];
+  const p1Last = stroke1.points[stroke1.points.length - 1];
+  const p2First = stroke2.points[0];
+  const p2Last = stroke2.points[stroke2.points.length - 1];
+
+  const dx1 = Math.abs(p1Last.x - p1First.x);
+  const dy1 = Math.abs(p1Last.y - p1First.y);
+  const dx2 = Math.abs(p2Last.x - p2First.x);
+  const dy2 = Math.abs(p2Last.y - p2First.y);
+
+  // Both strokes should be roughly horizontal (allowing up to ~45 degree slant)
+  const isHoriz1 = dx1 >= dy1 * 0.75 || stroke1.boundingBox.width > stroke1.boundingBox.height;
+  const isHoriz2 = dx2 >= dy2 * 0.75 || stroke2.boundingBox.width > stroke2.boundingBox.height;
+  if (!isHoriz1 || !isHoriz2) return false;
+
+  // Vertically separated: one stroke's vertical center is distinctly above the other
+  const stroke1Center = (stroke1.boundingBox.minY + stroke1.boundingBox.maxY) / 2;
+  const stroke2Center = (stroke2.boundingBox.minY + stroke2.boundingBox.maxY) / 2;
   const verticalGap = Math.abs(stroke1Center - stroke2Center);
-  
-  return verticalGap >= 5 && verticalGap <= bbox.height;
+
+  // Reasonable vertical gap: at least 4px, not miles apart
+  if (verticalGap < 4) return false;
+
+  // Aspect ratio should be reasonable (width >= 0.65 * height)
+  const aspectRatio = bbox.width / Math.max(bbox.height, 1);
+  return aspectRatio >= 0.65;
 }
 
 /**
